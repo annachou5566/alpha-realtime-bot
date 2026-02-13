@@ -9,23 +9,22 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_SECRET_KEY = process.env.API_SECRET_KEY || 'WaveAlpha_S3cur3_P@ssw0rd_5566';
 
-// --- CẤU HÌNH R2 (Lấy từ biến môi trường Render) ---
+// --- CẤU HÌNH R2 ---
 const R2_CONFIG = {
     region: "auto",
-    endpoint: process.env.R2_ENDPOINT_URL, // VD: https://<accountid>.r2.cloudflarestorage.com
+    endpoint: process.env.R2_ENDPOINT_URL,
     credentials: {
         accessKeyId: process.env.R2_ACCESS_KEY_ID,
         secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     }
 };
-const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME; // VD: wave-alpha-data
+const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const s3Client = new S3Client(R2_CONFIG);
 
-// --- MIDDLEWARE BẢO MẬT ---
-app.use(cors({ origin: '*' })); // Tạm mở để debug, sau này chặn lại sau
-app.use(rateLimit({ windowMs: 60000, max: 200 })); // Chống spam
+app.use(cors({ origin: '*' }));
+app.use(rateLimit({ windowMs: 60000, max: 300 })); // Tăng giới hạn lên xíu cho thoải mái
 
-// Kiểm tra Key
+// Middleware Key
 const apiKeyMiddleware = (req, res, next) => {
     const clientKey = req.headers['x-api-key'];
     if (!clientKey || clientKey !== API_SECRET_KEY) {
@@ -34,10 +33,25 @@ const apiKeyMiddleware = (req, res, next) => {
     next();
 };
 
-// --- API 1: LẤY DANH SÁCH TOKEN TỪ R2 (Cái bạn đang cần) ---
+// ==========================================
+// 🚀 TỐI ƯU CACHE CHO DANH SÁCH TOKEN (R2)
+// ==========================================
+let TOKEN_CACHE = null;       // Biến lưu dữ liệu trong RAM
+let LAST_CACHE_TIME = 0;      // Thời điểm lưu cuối cùng
+const CACHE_DURATION = 10 * 60 * 1000; // 10 Phút mới phải gọi R2 một lần
+
 app.get('/api/tokens', apiKeyMiddleware, async (req, res) => {
     try {
-        console.log("📥 Đang tải market-data.json từ R2...");
+        const now = Date.now();
+
+        // 1. Nếu đã có Cache và chưa hết hạn (10 phút) -> Trả về luôn
+        if (TOKEN_CACHE && (now - LAST_CACHE_TIME < CACHE_DURATION)) {
+            // console.log("⚡ Lấy Token từ RAM (Siêu nhanh)");
+            return res.json({ success: true, data: TOKEN_CACHE, source: 'cache' });
+        }
+
+        // 2. Nếu chưa có hoặc đã hết hạn -> Gọi R2 tải mới
+        console.log("📥 Đang tải market-data.json từ R2 (Làm mới Cache)...");
         const command = new GetObjectCommand({
             Bucket: R2_BUCKET_NAME,
             Key: "market-data.json"
@@ -47,15 +61,26 @@ app.get('/api/tokens', apiKeyMiddleware, async (req, res) => {
         const str = await response.Body.transformToString();
         const json = JSON.parse(str);
         
-        res.json({ success: true, data: json.data || json.tokens || [] });
-        console.log("✅ Đã gửi danh sách token cho Frontend.");
+        // Lưu vào RAM để dùng cho lần sau
+        TOKEN_CACHE = json.data || json.tokens || [];
+        LAST_CACHE_TIME = now;
+        
+        res.json({ success: true, data: TOKEN_CACHE, source: 'r2' });
+        console.log("✅ Đã cập nhật Cache danh sách token.");
+
     } catch (error) {
         console.error("❌ Lỗi R2:", error);
+        // Nếu R2 lỗi mà trong RAM vẫn còn hàng cũ -> Trả hàng cũ đỡ chống cháy
+        if (TOKEN_CACHE) {
+             return res.json({ success: true, data: TOKEN_CACHE, source: 'cache-fallback' });
+        }
         res.status(500).json({ success: false, message: "Lỗi tải dữ liệu R2", error: error.message });
     }
 });
 
-// --- API 2: REALTIME PRICES (Giữ nguyên) ---
+// ==========================================
+// REALTIME PRICES (Giữ nguyên không đổi)
+// ==========================================
 const BINANCE_API_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
 let PRICE_CACHE = {}; 
 
@@ -64,18 +89,12 @@ async function workerLoop() {
         const response = await axios.get(BINANCE_API_URL, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 2500 });
         if (response.data.success) {
             response.data.data.forEach(token => {
-                // Logic xử lý giá giữ nguyên như cũ
                 const id = token.alphaId ? token.alphaId.replace("ALPHA_", "") : null;
                 if (!id) return;
-                
-                PRICE_CACHE[id] = {
-                    p: parseFloat(token.price),
-                    st: 'NORMAL', // Tạm để normal cho nhẹ
-                    t: Date.now()
-                };
+                PRICE_CACHE[id] = { p: parseFloat(token.price), st: 'NORMAL', cl: '#0ECB81', sb: 'rgba(14, 203, 129, 0.1)' };
             });
         }
-    } catch (e) { console.error("Lỗi Binance Worker"); }
+    } catch (e) { console.error("Binance Worker Error"); }
 }
 setInterval(workerLoop, 3000);
 
