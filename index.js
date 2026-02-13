@@ -7,9 +7,34 @@ const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Mật khẩu truy cập API (Cấu hình trên Environment Render hoặc dùng mặc định)
 const API_SECRET_KEY = process.env.API_SECRET_KEY || 'WaveAlpha_S3cur3_P@ssw0rd_5566';
 
-// --- CẤU HÌNH R2 ---
+// ==========================================
+// 🛡️ CẤU HÌNH BẢO MẬT & LƯU LƯỢNG
+// ==========================================
+app.use(cors({ origin: '*' })); // Cho phép Web gọi API
+
+const limiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 phút
+    max: 500, // Tăng giới hạn lên 500 request/phút
+    message: { success: false, message: "⚠️ Quá nhiều yêu cầu, vui lòng thử lại sau." }
+});
+app.use(limiter);
+
+// Middleware kiểm tra chìa khóa (API Key)
+const apiKeyMiddleware = (req, res, next) => {
+    const clientKey = req.headers['x-api-key'];
+    if (!clientKey || clientKey !== API_SECRET_KEY) {
+        return res.status(403).json({ success: false, message: "⛔ Truy cập bị từ chối: Sai API Key!" });
+    }
+    next();
+};
+
+// ==========================================
+// ☁️ CẤU HÌNH CLOUDFLARE R2
+// ==========================================
 const R2_CONFIG = {
     region: "auto",
     endpoint: process.env.R2_ENDPOINT_URL,
@@ -21,37 +46,83 @@ const R2_CONFIG = {
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const s3Client = new S3Client(R2_CONFIG);
 
-app.use(cors({ origin: '*' }));
-app.use(rateLimit({ windowMs: 60000, max: 300 })); // Tăng giới hạn lên xíu cho thoải mái
+// Cache cho danh sách Token từ R2 (Lưu 10 phút)
+let TOKEN_CACHE = null;
+let LAST_TOKEN_SYNC = 0;
+const TOKEN_CACHE_DURATION = 10 * 60 * 1000; 
 
-// Middleware Key
-const apiKeyMiddleware = (req, res, next) => {
-    const clientKey = req.headers['x-api-key'];
-    if (!clientKey || clientKey !== API_SECRET_KEY) {
-        return res.status(403).json({ success: false, message: "⛔ Sai API Key!" });
+// ==========================================
+// 📈 CẤU HÌNH REALTIME PRICES (BINANCE)
+// ==========================================
+const BINANCE_API_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
+let PRICE_CACHE = {}; 
+let lastWorkerRun = "Chưa chạy";
+
+/**
+ * Vòng lặp lấy giá từ Binance - Tối ưu chống treo
+ */
+async function workerLoop() {
+    try {
+        const response = await axios.get(BINANCE_API_URL, { 
+            headers: { 'User-Agent': 'Mozilla/5.0' }, 
+            timeout: 5000 
+        });
+
+        if (response.data && response.data.success) {
+            const tokens = response.data.data;
+            
+            tokens.forEach(token => {
+                // Chuẩn hóa ID: "ALPHA_42" -> "42"
+                const id = token.alphaId ? token.alphaId.replace("ALPHA_", "") : null;
+                if (!id) return;
+
+                const currentPrice = parseFloat(token.price || 0);
+                const oldData = PRICE_CACHE[id] || {};
+                const oldPrice = oldData.p || currentPrice;
+
+                // Logic tính toán trạng thái PUMP/DUMP đơn giản
+                let status = "NORMAL";
+                let color = "#0ECB81"; // Xanh
+                let diff = currentPrice - oldPrice;
+
+                if (diff < 0) {
+                    status = "SLIPPAGE";
+                    color = "#F6465D"; // Đỏ
+                }
+
+                PRICE_CACHE[id] = {
+                    p: currentPrice,           // Giá hiện tại
+                    st: status,                // Trạng thái
+                    cl: color,                 // Màu sắc
+                    sb: (color === '#0ECB81') ? 'rgba(14, 203, 129, 0.1)' : 'rgba(246, 70, 93, 0.1)', // Màu nền
+                    t: Date.now()              // Timestamp
+                };
+            });
+
+            lastWorkerRun = new Date().toLocaleTimeString();
+            console.log(`🚀 [Binance] Đã cập nhật ${tokens.length} mã lúc ${lastWorkerRun}`);
+        }
+    } catch (e) {
+        console.error("❌ Lỗi Binance Worker:", e.message);
+    } finally {
+        // Đợi đúng 3 giây rồi mới chạy tiếp (Chống chồng chéo request)
+        setTimeout(workerLoop, 3000); 
     }
-    next();
-};
+}
 
 // ==========================================
-// 🚀 TỐI ƯU CACHE CHO DANH SÁCH TOKEN (R2)
+// 🛣️ ĐỊNH TUYẾN API (ROUTES)
 // ==========================================
-let TOKEN_CACHE = null;       // Biến lưu dữ liệu trong RAM
-let LAST_CACHE_TIME = 0;      // Thời điểm lưu cuối cùng
-const CACHE_DURATION = 10 * 60 * 1000; // 10 Phút mới phải gọi R2 một lần
 
+// API 1: Lấy danh sách Token (Tải từ R2 và Cache)
 app.get('/api/tokens', apiKeyMiddleware, async (req, res) => {
     try {
         const now = Date.now();
-
-        // 1. Nếu đã có Cache và chưa hết hạn (10 phút) -> Trả về luôn
-        if (TOKEN_CACHE && (now - LAST_CACHE_TIME < CACHE_DURATION)) {
-            // console.log("⚡ Lấy Token từ RAM (Siêu nhanh)");
+        if (TOKEN_CACHE && (now - LAST_TOKEN_SYNC < TOKEN_CACHE_DURATION)) {
             return res.json({ success: true, data: TOKEN_CACHE, source: 'cache' });
         }
 
-        // 2. Nếu chưa có hoặc đã hết hạn -> Gọi R2 tải mới
-        console.log("📥 Đang tải market-data.json từ R2 (Làm mới Cache)...");
+        console.log("📥 Đang làm mới danh sách Token từ R2...");
         const command = new GetObjectCommand({
             Bucket: R2_BUCKET_NAME,
             Key: "market-data.json"
@@ -61,45 +132,41 @@ app.get('/api/tokens', apiKeyMiddleware, async (req, res) => {
         const str = await response.Body.transformToString();
         const json = JSON.parse(str);
         
-        // Lưu vào RAM để dùng cho lần sau
         TOKEN_CACHE = json.data || json.tokens || [];
-        LAST_CACHE_TIME = now;
+        LAST_TOKEN_SYNC = now;
         
         res.json({ success: true, data: TOKEN_CACHE, source: 'r2' });
-        console.log("✅ Đã cập nhật Cache danh sách token.");
-
     } catch (error) {
-        console.error("❌ Lỗi R2:", error);
-        // Nếu R2 lỗi mà trong RAM vẫn còn hàng cũ -> Trả hàng cũ đỡ chống cháy
-        if (TOKEN_CACHE) {
-             return res.json({ success: true, data: TOKEN_CACHE, source: 'cache-fallback' });
-        }
-        res.status(500).json({ success: false, message: "Lỗi tải dữ liệu R2", error: error.message });
+        console.error("❌ Lỗi R2:", error.message);
+        if (TOKEN_CACHE) return res.json({ success: true, data: TOKEN_CACHE, source: 'fallback' });
+        res.status(500).json({ success: false, message: "Không thể tải dữ liệu R2" });
     }
 });
 
-// ==========================================
-// REALTIME PRICES (Giữ nguyên không đổi)
-// ==========================================
-const BINANCE_API_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
-let PRICE_CACHE = {}; 
-
-async function workerLoop() {
-    try {
-        const response = await axios.get(BINANCE_API_URL, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 2500 });
-        if (response.data.success) {
-            response.data.data.forEach(token => {
-                const id = token.alphaId ? token.alphaId.replace("ALPHA_", "") : null;
-                if (!id) return;
-                PRICE_CACHE[id] = { p: parseFloat(token.price), st: 'NORMAL', cl: '#0ECB81', sb: 'rgba(14, 203, 129, 0.1)' };
-            });
-        }
-    } catch (e) { console.error("Binance Worker Error"); }
-}
-setInterval(workerLoop, 3000);
-
+// API 2: Lấy giá Realtime (Lấy từ RAM - Siêu nhanh)
 app.get('/api/prices', apiKeyMiddleware, (req, res) => {
-    res.json({ success: true, ts: Date.now(), data: PRICE_CACHE });
+    res.json({
+        success: true,
+        ts: Date.now(),
+        last_sync: lastWorkerRun,
+        data: PRICE_CACHE
+    });
 });
 
-app.listen(PORT, () => console.log(`Server chạy port ${PORT}`));
+// Kiểm tra Server sống hay chết
+app.get('/', (req, res) => {
+    res.send(`<h1>Alpha Realtime Server is Online</h1><p>Last Sync: ${lastWorkerRun}</p>`);
+});
+
+// ==========================================
+// 🏁 KHỞI CHẠY SERVER
+// ==========================================
+app.listen(PORT, () => {
+    console.log(`---`);
+    console.log(`✅ Server đang chạy tại cổng: ${PORT}`);
+    console.log(`🔑 API Key bảo mật: ${API_SECRET_KEY}`);
+    console.log(`---`);
+    
+    // Kích hoạt vòng lặp lấy giá ngay lập tức
+    workerLoop();
+});
