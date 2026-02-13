@@ -46,7 +46,7 @@ const apiKeyMiddleware = (req, res, next) => {
         // Nếu sai hoặc không có chìa -> Đuổi về ngay
         return res.status(403).json({ 
             success: false, 
-            message: "⛔ ACCESS DENIED: Missing or Invalid API Key." 
+            message: "⛔ ACCESS DENIED." 
         });
     }
     
