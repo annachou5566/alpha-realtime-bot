@@ -61,6 +61,9 @@ let lastWorkerRun = "Chưa chạy";
 /**
  * Vòng lặp lấy giá từ Binance - Tối ưu chống treo
  */
+/**
+ * Vòng lặp lấy giá từ Binance - Phiên bản chuẩn chỉnh nhất
+ */
 async function workerLoop() {
     try {
         const response = await axios.get(BINANCE_API_URL, { 
@@ -70,42 +73,57 @@ async function workerLoop() {
 
         if (response.data && response.data.success) {
             const tokens = response.data.data;
-            
+            let artxPriceForLog = "N/A";
+
             tokens.forEach(token => {
-                // Chuẩn hóa ID: "ALPHA_42" -> "42"
+                // 1. Chuẩn hóa ID: "ALPHA_1" -> "1"
                 const id = token.alphaId ? token.alphaId.replace("ALPHA_", "") : null;
                 if (!id) return;
 
                 const currentPrice = parseFloat(token.price || 0);
+                
+                // 2. Lấy dữ liệu cũ để so sánh biến động
                 const oldData = PRICE_CACHE[id] || {};
                 const oldPrice = oldData.p || currentPrice;
 
-                // Logic tính toán trạng thái PUMP/DUMP đơn giản
+                // 3. Logic xác định trạng thái & màu sắc
                 let status = "NORMAL";
-                let color = "#0ECB81"; // Xanh
-                let diff = currentPrice - oldPrice;
-
-                if (diff < 0) {
+                let color = "#0ECB81"; // Xanh lá (Mặc định)
+                
+                if (currentPrice < oldPrice) {
                     status = "SLIPPAGE";
                     color = "#F6465D"; // Đỏ
+                } else if (currentPrice > oldPrice) {
+                    status = "PUMPING";
+                    color = "#00F0FF"; // Xanh dương/Cyan (Khi giá tăng)
                 }
 
+                // 4. Cập nhật vào kho lưu trữ (RAM)
                 PRICE_CACHE[id] = {
-                    p: currentPrice,           // Giá hiện tại
-                    st: status,                // Trạng thái
-                    cl: color,                 // Màu sắc
-                    sb: (color === '#0ECB81') ? 'rgba(14, 203, 129, 0.1)' : 'rgba(246, 70, 93, 0.1)', // Màu nền
-                    t: Date.now()              // Timestamp
+                    p: currentPrice,           // Giá gốc từ Binance
+                    st: status,                // Trạng thái (SLIPPAGE/PUMPING/NORMAL)
+                    cl: color,                 // Màu chữ tương ứng
+                    sb: (color === '#F6465D') ? 'rgba(246, 70, 93, 0.1)' : 
+                        (color === '#00F0FF') ? 'rgba(0, 240, 255, 0.1)' : 'rgba(14, 203, 129, 0.1)', // Màu nền
+                    t: Date.now()              // Thời gian cập nhật
                 };
+
+                // 5. Lưu lại giá ARTX (ID 1) để in ra Log kiểm tra
+                if (id === "1") {
+                    artxPriceForLog = currentPrice;
+                }
             });
 
             lastWorkerRun = new Date().toLocaleTimeString();
-            console.log(`🚀 [Binance] Đã cập nhật ${tokens.length} mã lúc ${lastWorkerRun}`);
+            
+            // IN LOG CHI TIẾT ĐỂ KIỂM TRA TRÊN RENDER
+            // Nếu giá ARTX thay đổi, bạn sẽ nhìn thấy ngay ở đây
+            console.log(`🚀 [Update] ${tokens.length} mã | ARTX: ${artxPriceForLog} | Lúc: ${lastWorkerRun}`);
         }
     } catch (e) {
         console.error("❌ Lỗi Binance Worker:", e.message);
     } finally {
-        // Đợi đúng 3 giây rồi mới chạy tiếp (Chống chồng chéo request)
+        // Đợi đúng 3 giây (3000ms) rồi mới chạy vòng lặp tiếp theo
         setTimeout(workerLoop, 3000); 
     }
 }
