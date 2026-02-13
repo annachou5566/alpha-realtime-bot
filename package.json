@@ -11,7 +11,7 @@
       "axios": "^1.6.2",
       "cors": "^2.8.5",
       "dotenv": "^16.3.1",
-        "express-rate-limit": "^7.1.5"
+        "express-rate-limit": "^7.1.5",
       "@aws-sdk/client-s3": "^3.454.0"
     },
     "engines": {
