@@ -64,6 +64,10 @@ let lastWorkerRun = "Chưa chạy";
 /**
  * Vòng lặp lấy giá từ Binance - Phiên bản chuẩn chỉnh nhất
  */
+/**
+ * VÒNG LẶP LẤY GIÁ TỪ BINANCE - PHIÊN BẢN CHUẨN KHỚP TÊN (SYMBOL)
+ * Chức năng: Lấy giá, tính toán PUMP/DUMP và gửi kèm Symbol để Frontend dễ khớp lệnh.
+ */
 async function workerLoop() {
     try {
         const response = await axios.get(BINANCE_API_URL, { 
@@ -71,59 +75,56 @@ async function workerLoop() {
             timeout: 5000 
         });
 
-        if (response.data && response.data.success) {
+        if (response && response.data && response.data.success) {
             const tokens = response.data.data;
-            let artxPriceForLog = "N/A";
+            let artxLog = "N/A";
 
             tokens.forEach(token => {
-                // 1. Chuẩn hóa ID: "ALPHA_1" -> "1"
+                // 1. Chuẩn hóa ID (Bỏ chữ ALPHA_)
                 const id = token.alphaId ? token.alphaId.replace("ALPHA_", "") : null;
                 if (!id) return;
 
-                const currentPrice = parseFloat(token.price || 0);
+                // 2. Lấy Tên Token (Ví dụ: ARTX, GORILLA) - Đây là chìa khóa để khớp lệnh
+                const symbol = (token.symbol || "").toUpperCase().trim();
                 
-                // 2. Lấy dữ liệu cũ để so sánh biến động
+                // 3. Xử lý giá
+                const currentPrice = parseFloat(token.price || 0);
                 const oldData = PRICE_CACHE[id] || {};
                 const oldPrice = oldData.p || currentPrice;
 
-                // 3. Logic xác định trạng thái & màu sắc
+                // 4. Logic màu sắc & trạng thái
                 let status = "NORMAL";
-                let color = "#0ECB81"; // Xanh lá (Mặc định)
+                let color = "#0ECB81"; // Xanh lá
                 
                 if (currentPrice < oldPrice) {
                     status = "SLIPPAGE";
                     color = "#F6465D"; // Đỏ
                 } else if (currentPrice > oldPrice) {
                     status = "PUMPING";
-                    color = "#00F0FF"; // Xanh dương/Cyan (Khi giá tăng)
+                    color = "#00F0FF"; // Xanh dương (Khi tăng)
                 }
 
-                // 4. Cập nhật vào kho lưu trữ (RAM)
+                // 5. Lưu vào RAM (Gửi thêm trường 's' là Symbol về cho Web)
                 PRICE_CACHE[id] = {
-                    p: currentPrice,           // Giá gốc từ Binance
-                    st: status,                // Trạng thái (SLIPPAGE/PUMPING/NORMAL)
-                    cl: color,                 // Màu chữ tương ứng
+                    p: currentPrice,           // Giá
+                    s: symbol,                 // TÊN TOKEN (QUAN TRỌNG NHẤT)
+                    st: status,                // Trạng thái
+                    cl: color,                 // Màu chữ
                     sb: (color === '#F6465D') ? 'rgba(246, 70, 93, 0.1)' : 
-                        (color === '#00F0FF') ? 'rgba(0, 240, 255, 0.1)' : 'rgba(14, 203, 129, 0.1)', // Màu nền
-                    t: Date.now()              // Thời gian cập nhật
+                        (color === '#00F0FF') ? 'rgba(0, 240, 255, 0.1)' : 'rgba(14, 203, 129, 0.1)',
+                    t: Date.now()
                 };
 
-                // 5. Lưu lại giá ARTX (ID 1) để in ra Log kiểm tra
-                if (id === "1") {
-                    artxPriceForLog = currentPrice;
-                }
+                if (symbol === "ARTX") artxLog = currentPrice;
             });
 
             lastWorkerRun = new Date().toLocaleTimeString();
-            
-            // IN LOG CHI TIẾT ĐỂ KIỂM TRA TRÊN RENDER
-            // Nếu giá ARTX thay đổi, bạn sẽ nhìn thấy ngay ở đây
-            console.log(`🚀 [Update] ${tokens.length} mã | ARTX: ${artxPriceForLog} | Lúc: ${lastWorkerRun}`);
+            console.log(`🚀 [Binance] Sync: ${tokens.length} mã | ARTX: ${artxLog} | Lúc: ${lastWorkerRun}`);
         }
     } catch (e) {
-        console.error("❌ Lỗi Binance Worker:", e.message);
+        console.error("❌ Lỗi Server Worker:", e.message);
     } finally {
-        // Đợi đúng 3 giây (3000ms) rồi mới chạy vòng lặp tiếp theo
+        // Luôn chạy lại sau 3 giây bất kể thành công hay thất bại
         setTimeout(workerLoop, 3000); 
     }
 }
