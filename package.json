@@ -1,20 +1,21 @@
 {
-    "name": "alpha-realtime-server",
-    "version": "1.0.0",
-    "description": "Realtime Layer 2 for Alpha Trading",
-    "main": "index.js",
-    "scripts": {
-      "start": "node index.js"
-    },
-    "dependencies": {
-      "express": "^4.18.2",
-      "axios": "^1.6.2",
-      "cors": "^2.8.5",
-      "dotenv": "^16.3.1",
-        "express-rate-limit": "^7.1.5",
-      "@aws-sdk/client-s3": "^3.454.0"
-    },
-    "engines": {
-      "node": ">=18.0.0"
-    }
+  "name": "alpha-realtime-server",
+  "version": "1.0.0",
+  "description": "Realtime Layer 2 for Alpha Trading",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express-rate-limit": "^7.1.5",
+    "@aws-sdk/client-s3": "^3.454.0",
+    "@supabase/supabase-js": "^2.38.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
+}
