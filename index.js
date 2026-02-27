@@ -155,8 +155,8 @@ function buildSuffixSum(klines) {
         const date = new Date(parseInt(k[0]));
         const minuteIndex = date.getUTCHours() * 60 + date.getUTCMinutes();
         
-        // SỬ DỤNG k[7] (Volume USD) ĐỂ CÙNG ĐƠN VỊ VỚI API ROLLING
-        minuteMap[minuteIndex] = parseFloat(k[7] || 0); 
+        // SỬ DỤNG k[7] (Volume USD) ĐỂ CÙNG ĐƠN VỊ VỚI API ROLLING 24H
+        minuteMap[minuteIndex] = Number(k[7] || 0); 
     });
 
     let runningSum = 0;
@@ -384,14 +384,17 @@ async function loopRealtime() {
                 const rollVolTot = parseFloat(t.volume24h || 0);
                 const rollVolLim = limitMap[id] || 0;
 
-                const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
-                const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
+                // Trong loopRealtime, thay đoạn tính toán bằng:
+const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
+const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
 
-                let dailyTot = rollVolTot - tailTot;
-                let dailyLim = rollVolLim - tailLim;
+// Trừ trực tiếp, không Fallback, không tào lao
+let dailyTot = rollVolTot - tailTot;
+let dailyLim = rollVolLim - tailLim;
 
-                if (dailyTot < 0) dailyTot = rollVolTot * 0.3;
-                if (dailyLim < 0) dailyLim = rollVolLim * 0.3;
+// Chỉ giữ lại chặn 0 để tránh số âm lúc nến chưa cập nhật kịp
+if (dailyTot < 0) dailyTot = 0;
+if (dailyLim < 0) dailyLim = 0;
 
                 // 👇 CHÈN ĐOẠN NÀY VÀO ĐỂ SOI LOG TOKEN STABLE
                 if (id === 'ALPHA_488') {
@@ -468,23 +471,30 @@ app.get('/api/competition-data', (req, res) => {
         const config = ACTIVE_CONFIG[alphaId];
         const base = BASE_HISTORY_DATA[alphaId] || {};
         const real = GLOBAL_MARKET[alphaId] || {};
-        const offset = START_OFFSET_CACHE[alphaId] || 0;
-
-        const todayVol = real.v?.dt || 0;
-        const todayLimit = real.v?.dl || 0;
+        
+        // 1. ÉP KIỂU SỐ CHO TẤT CẢ BIẾN ĐẦU VÀO ĐỂ TRÁNH LỖI NỐI CHUỖI
+        const offset = parseFloat(START_OFFSET_CACHE[alphaId] || 0);
+        const todayVol = parseFloat(real.v?.dt || 0);
+        const todayLimit = parseFloat(real.v?.dl || 0);
+        const baseTotal = parseFloat(base.base_total_vol || 0);
+        const baseLimit = parseFloat(base.base_limit_vol || 0);
 
         let effectiveTodayVol = todayVol;
         if (config.start === nowStr) effectiveTodayVol = Math.max(0, todayVol - offset);
 
-        const totalAccumulated = parseFloat(baseTotal) + parseFloat(effectiveTodayVol);
-        const limitAccumulated = parseFloat(base.base_limit_vol || 0) + parseFloat(todayLimit || 0);        
+        // 2. TÍNH VOLUME TÍCH LŨY (Đã khai báo baseTotal ở trên nên không bị lỗi Reference)
+        const totalAccumulated = baseTotal + effectiveTodayVol;
+        const limitAccumulated = baseLimit + todayLimit;  
+        
         const historyArr = base.history_total ? [...base.history_total] : [];
         const existingToday = historyArr.find(h => h.date === nowStr);
         if (existingToday) existingToday.vol = effectiveTodayVol;
         else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
 
-        const limitTxAccumulated = (base.base_limit_tx || 0) + (real.tx ? real.tx * 0.5 : 0);
-        const totalTxAccumulated = (base.base_total_tx || 0) + (real.tx || 0);
+        // 3. TÍNH TX TÍCH LŨY (Bổ sung parseFloat cho TX để chống lỗi)
+        const realTx = parseFloat(real.tx || 0);
+        const limitTxAccumulated = parseFloat(base.base_limit_tx || 0) + (realTx * 0.5);
+        const totalTxAccumulated = parseFloat(base.base_total_tx || 0) + realTx;
 
         const aiResult = calculateAiPrediction(config, {
             totalAccumulated,
@@ -500,8 +510,8 @@ app.get('/api/competition-data', (req, res) => {
             total_accumulated_volume: totalAccumulated,
             limit_accumulated_volume: limitAccumulated,
             real_alpha_volume: effectiveTodayVol,
-            base_total_vol: base.base_total_vol || 0,
-            base_limit_vol: base.base_limit_vol || 0,
+            base_total_vol: baseTotal, // Đã đồng nhất biến khai báo ở trên
+            base_limit_vol: baseLimit, // Đã đồng nhất biến khai báo ở trên
             real_vol_history: historyArr,
             market_analysis: real.analysis || { label: "WAIT..." },
             ai_prediction: aiResult
