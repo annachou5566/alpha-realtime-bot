@@ -360,7 +360,6 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 // ==========================================
 async function loopRealtime() {
     try {
-        // SỬ DỤNG LINK TỪ CONFIG BÊN TRÊN
         const [resTot, resLim] = await Promise.all([
             axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 5000 }),
             axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 5000 })
@@ -382,7 +381,6 @@ async function loopRealtime() {
                 const rollVolTot = parseFloat(t.volume24h || 0);
                 const rollVolLim = limitMap[id] || 0;
 
-                // CẮT ĐUÔI VỚI SNAPSHOT
                 const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
                 const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
 
@@ -391,6 +389,17 @@ async function loopRealtime() {
 
                 if (dailyTot < 0) dailyTot = rollVolTot * 0.3;
                 if (dailyLim < 0) dailyLim = rollVolLim * 0.3;
+
+                // 👇 CHÈN ĐOẠN NÀY VÀO ĐỂ SOI LOG TOKEN STABLE
+                if (id === 'ALPHA_488') {
+                    console.log(`--- [SOI LOG STABLE] ---`);
+                    console.log(`Phút hiện tại (Index): ${currentMinute}`);
+                    console.log(`1. Rolling 24h (Sàn trả về): ${rollVolTot}`);
+                    console.log(`2. Đuôi hôm qua (Tail snapshot): ${tailTot}`);
+                    console.log(`3. Kết quả sau khi trừ (Daily): ${dailyTot}`);
+                    console.log(`------------------------`);
+                }
+                // 👆 KẾT THÚC ĐOẠN LOG
 
                 GLOBAL_MARKET[id] = {
                     p: parseFloat(t.price || 0),
@@ -464,9 +473,8 @@ app.get('/api/competition-data', (req, res) => {
         let effectiveTodayVol = todayVol;
         if (config.start === nowStr) effectiveTodayVol = Math.max(0, todayVol - offset);
 
-        const totalAccumulated = (base.base_total_vol || 0) + effectiveTodayVol;
-        const limitAccumulated = (base.base_limit_vol || 0) + todayLimit;
-        
+        const totalAccumulated = parseFloat(baseTotal) + parseFloat(effectiveTodayVol);
+        const limitAccumulated = parseFloat(base.base_limit_vol || 0) + parseFloat(todayLimit || 0);        
         const historyArr = base.history_total ? [...base.history_total] : [];
         const existingToday = historyArr.find(h => h.date === nowStr);
         if (existingToday) existingToday.vol = effectiveTodayVol;
