@@ -465,6 +465,8 @@ app.get('/api/competition-data', (req, res) => {
             total_accumulated_volume: totalAccumulated,
             limit_accumulated_volume: limitAccumulated,
             real_alpha_volume: effectiveTodayVol,
+            base_total_vol: base.base_total_vol || 0,
+            base_limit_vol: base.base_limit_vol || 0,
             real_vol_history: historyArr,
             market_analysis: real.analysis || { label: "WAIT..." },
             ai_prediction: aiResult
