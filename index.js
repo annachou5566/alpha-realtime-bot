@@ -147,13 +147,16 @@ async function checkStartOffsets() {
 // ==========================================
 function buildSuffixSum(klines) {
     const arr = new Array(1440).fill(0);
-    if (!klines || !Array.isArray(klines)) return arr;
+    let dataArray = Array.isArray(klines) ? klines : (klines?.klineInfos || []);
+    if (!dataArray || dataArray.length === 0) return arr;
 
     const minuteMap = {};
-    klines.forEach(k => {
+    dataArray.forEach(k => {
         const date = new Date(parseInt(k[0]));
         const minuteIndex = date.getUTCHours() * 60 + date.getUTCMinutes();
-        minuteMap[minuteIndex] = parseFloat(k[5] || 0); 
+        
+        // SỬ DỤNG k[7] (Volume USD) ĐỂ CÙNG ĐƠN VỊ VỚI API ROLLING
+        minuteMap[minuteIndex] = parseFloat(k[7] || 0); 
     });
 
     let runningSum = 0;
