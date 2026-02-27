@@ -396,16 +396,7 @@ let dailyLim = rollVolLim - tailLim;
 if (dailyTot < 0) dailyTot = 0;
 if (dailyLim < 0) dailyLim = 0;
 
-                // 👇 CHÈN ĐOẠN NÀY VÀO ĐỂ SOI LOG TOKEN STABLE
-                if (id === 'ALPHA_488') {
-                    console.log(`--- [SOI LOG STABLE] ---`);
-                    console.log(`Phút hiện tại (Index): ${currentMinute}`);
-                    console.log(`1. Rolling 24h (Sàn trả về): ${rollVolTot}`);
-                    console.log(`2. Đuôi hôm qua (Tail snapshot): ${tailTot}`);
-                    console.log(`3. Kết quả sau khi trừ (Daily): ${dailyTot}`);
-                    console.log(`------------------------`);
-                }
-                // 👆 KẾT THÚC ĐOẠN LOG
+                
 
                 GLOBAL_MARKET[id] = {
                     p: parseFloat(t.price || 0),
