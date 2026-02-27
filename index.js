@@ -165,26 +165,50 @@ function buildSuffixSum(klines) {
 }
 
 async function runYesterdaySnapshot() {
-    console.log("📸 Đang chụp Snapshot dữ liệu hôm qua để cắt đuôi Volume...");
+    console.log("📸 Bắt đầu chụp Snapshot dữ liệu hôm qua để cắt đuôi...");
     const yesterday = new Date(Date.now() - 86400000);
     const startTime = new Date(yesterday).setUTCHours(0,0,0,0);
     const endTime = new Date(yesterday).setUTCHours(23,59,59,999);
 
     for (let symbol of ACTIVE_TOKEN_LIST) {
         try {
-            // SỬ DỤNG LINK TỪ CONFIG BÊN TRÊN
             const urlTot = API_ENDPOINTS.KLINES_TOTAL(symbol, startTime, endTime);
             const urlLim = API_ENDPOINTS.KLINES_LIMIT(symbol, startTime, endTime);
             
+            console.log(`🔍 [TEST] Đang gọi API Klines cho: ${symbol}`);
+            console.log(`🔍 [TEST] URL Total: ${urlTot}`);
+
             const [resTot, resLim] = await Promise.all([
                 axios.get(urlTot, { headers: FAKE_HEADERS }),
                 axios.get(urlLim, { headers: FAKE_HEADERS })
             ]);
 
-            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos);
-            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos);
+            // KIỂM TRA CẤU TRÚC JSON TRẢ VỀ
+            const dataTot = resTot.data;
+            console.log(`🔍 [TEST] Keys trả về từ Total:`, Object.keys(dataTot));
+            
+            let arrayTot = dataTot?.data?.klineInfos || dataTot?.data;
+            
+            // XEM LẤY ĐƯỢC BAO NHIÊU NẾN
+            if (Array.isArray(arrayTot)) {
+                console.log(`✅ [TEST] ${symbol} - Đã lấy được ${arrayTot.length} cây nến Total.`);
+                if (arrayTot.length > 0) {
+                    console.log(`✅ [TEST] Volume k[5] nến đầu tiên: ${arrayTot[0][5]}`);
+                }
+            } else {
+                console.log(`⚠️ [TEST] Dữ liệu trả về không phải là mảng. Nội dung:`, JSON.stringify(dataTot).substring(0, 200));
+            }
+
+            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos || resTot.data?.data);
+            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos || resLim.data?.data);
+            
             await sleep(100); 
-        } catch (e) {}
+        } catch (e) {
+            console.error(`❌ [TEST] Lỗi tải Snapshot ${symbol}:`, e.message);
+            if (e.response) {
+                console.error(`❌ [TEST] Lỗi chi tiết từ Binance:`, e.response.data);
+            }
+        }
     }
     console.log("✅ Snapshot hoàn tất!");
 }
