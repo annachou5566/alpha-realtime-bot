@@ -384,22 +384,22 @@ async function loopRealtime() {
                 const rollVolTot = parseFloat(t.volume24h || 0);
                 const rollVolLim = limitMap[id] || 0;
 
-                // Trong loopRealtime, thay đoạn tính toán bằng:
-const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
-const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
+                const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
+                const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
 
-// Trừ trực tiếp, không Fallback, không tào lao
-let dailyTot = rollVolTot - tailTot;
-let dailyLim = rollVolLim - tailLim;
+                let dailyTot = rollVolTot - tailTot;
+                let dailyLim = rollVolLim - tailLim;
 
-// Chỉ giữ lại chặn 0 để tránh số âm lúc nến chưa cập nhật kịp
-if (dailyTot < 0) dailyTot = 0;
-if (dailyLim < 0) dailyLim = 0;
-
-                
+                if (dailyTot < 0) dailyTot = 0;
+                if (dailyLim < 0) dailyLim = 0;
 
                 GLOBAL_MARKET[id] = {
                     p: parseFloat(t.price || 0),
+                    c: parseFloat(t.percentChange24h || t.priceChangePercent || 0), 
+                    r24: rollVolTot,                                               
+                    l: parseFloat(t.liquidity || 0),                             
+                    mc: parseFloat(t.marketCap || 0),                                
+                    h: parseInt(t.holders || t.holderCount || 0),                    
                     v: { dt: dailyTot, dl: dailyLim }, 
                     tx: parseFloat(t.count24h || 0),
                     analysis: GLOBAL_MARKET[id]?.analysis 
@@ -497,15 +497,22 @@ app.get('/api/competition-data', (req, res) => {
 
         responseData[alphaId] = {
             ...config,
-            price: real.p,
+            price: real.p !== undefined ? real.p : config.price,
+            change_24h: real.c !== undefined ? real.c : config.change_24h,
+            liquidity: real.l !== undefined ? real.l : config.liquidity,
+            volume: {
+                ...(config.volume || {}),
+                rolling_24h: real.r24 !== undefined ? real.r24 : (config.volume?.rolling_24h || 0)
+            },
             total_accumulated_volume: totalAccumulated,
             limit_accumulated_volume: limitAccumulated,
             real_alpha_volume: effectiveTodayVol,
-            base_total_vol: baseTotal, // Đã đồng nhất biến khai báo ở trên
-            base_limit_vol: baseLimit, // Đã đồng nhất biến khai báo ở trên
+            base_total_vol: baseTotal,
+            base_limit_vol: baseLimit,
             real_vol_history: historyArr,
             market_analysis: real.analysis || { label: "WAIT..." },
             ai_prediction: aiResult
+       
         };
 
         if (aiResult.is_finalized) {
