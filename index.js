@@ -183,7 +183,19 @@ async function runYesterdaySnapshot() {
                 axios.get(urlTot, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
                 axios.get(urlLim, { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
             ]);
-
+// --- BẮT ĐẦU DEBUG SNAPSHOT ---
+            if (symbol === "ALPHA_488") { // Thay bằng mã ALPHA của token Stable bạn đang test
+                console.log(`\n=== DEBUG SNAPSHOT ${symbol} ===`);
+                console.log("URL Total gọi:", urlTot);
+                const klines = resTot.data?.data?.klineInfos;
+                console.log("Số lượng nến Total lấy được:", klines ? klines.length : "UNDEFINED hoặc LỖI");
+                if (klines && klines.length > 0) {
+                    console.log("Nến đầu tiên (k[5] USD):", klines[0][5]);
+                } else {
+                    console.log("Toàn bộ cục resTot trả về:", JSON.stringify(resTot.data).substring(0, 300));
+                }
+            }
+            // --- KẾT THÚC DEBUG ---
             SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos);
             SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos);
             
@@ -349,6 +361,18 @@ async function loopRealtime() {
             }
 
             resTot.data.data.forEach(t => {
+                // --- BẮT ĐẦU DEBUG REALTIME ---
+                if (t.alphaId === "ALPHA_488") { // Thay bằng mã ALPHA của token Stable
+                    console.log(`\n=== DEBUG REALTIME ${t.alphaId} ===`);
+                    console.log("Dữ liệu gốc từ BULK_TOTAL:", JSON.stringify(t));
+                    console.log("Biến rollVolTot (t.volume24h):", t.volume24h);
+                    console.log("Thử xem biến amount24h có không:", t.amount24h, t.quoteVolume24h);
+                    
+                    const now = new Date();
+                    const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
+                    console.log("Cái đuôi tailTot đang là:", SNAPSHOT_TAIL_TOTAL[t.alphaId]?.[currentMinute]);
+                }
+                // --- KẾT THÚC DEBUG ---
                 const id = t.alphaId;
                 if (!id) return;
                 
