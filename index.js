@@ -518,6 +518,22 @@ app.get('/api/competition-data', (req, res) => {
     res.json(responseData);
 });
 
+app.get('/api/proxy', async (req, res) => {
+    const targetUrl = req.query.url;
+    if (!targetUrl) return res.status(400).json({ error: "Thiếu tham số url" });
+
+    try {
+        const response = await axios.get(targetUrl, {
+            headers: FAKE_HEADERS,
+            timeout: 10000 // Tối đa 10s
+        });
+        res.json(response.data);
+    } catch (e) {
+        console.error("⚠️ Proxy Lỗi khi gọi:", targetUrl, "->", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // START SERVER VÀ CÁC CRON JOBS
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
