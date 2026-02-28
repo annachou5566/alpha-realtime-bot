@@ -20,9 +20,9 @@ const API_ENDPOINTS = {
     BULK_TOTAL: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=aggregate",
     BULK_LIMIT: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=limit",
 
-    // 2. API Cắt Đuôi (Lấy 1500 phút mới nhất ~ 25 giờ để trích xuất 24h trước)
-    KLINES_TOTAL: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&limit=1500&tokenAddress=${contract}&dataType=aggregate`,
-    KLINES_LIMIT: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&limit=1500&tokenAddress=${contract}&dataType=limit`,
+    // 2. API Cắt Đuôi (Lách luật 1000 nến bằng cách chia làm 2 lần gọi)
+    KLINES_TOTAL: (chainId, contract, start, end) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&startTime=${start}&endTime=${end}&limit=1000&tokenAddress=${contract}&dataType=aggregate`,
+    KLINES_LIMIT: (chainId, contract, start, end) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&startTime=${start}&endTime=${end}&limit=1000&tokenAddress=${contract}&dataType=limit`,
 
     // 3. API Tính Offset Rác đầu ngày (Dùng aggregate để trừ triệt để)
     KLINES_1H_OFFSET: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1h&limit=100&tokenAddress=${contract}&dataType=aggregate`,
@@ -157,7 +157,7 @@ function buildSuffixSum(dataArray) {
     dataArray.forEach(k => {
         const date = new Date(parseInt(k[0]));
         const minuteIndex = date.getUTCHours() * 60 + date.getUTCMinutes();
-        minuteMap[minuteIndex] = Number(k[5] || 0); // VÁ LỖI: Lấy k[5] làm USD chuẩn của agg-klines
+        minuteMap[minuteIndex] = Number(k[5] || 0); // agg-klines lấy k[5] làm USD
     });
 
     let runningSum = 0;
@@ -169,35 +169,49 @@ function buildSuffixSum(dataArray) {
 }
 
 async function runYesterdaySnapshot() {
-    console.log("📸 Bắt đầu chụp Snapshot dữ liệu hôm qua để cắt đuôi...");
+    console.log("📸 Bắt đầu chụp Snapshot cắt đuôi (Chia 2 ca Sáng/Chiều)...");
     
+    // Set 4 mốc thời gian để chia ngày làm 2 nửa
+    const yesterday = new Date(Date.now() - 86400000);
+    const yStart = new Date(yesterday).setUTCHours(0,0,0,0);
+    const yMid1 = new Date(yesterday).setUTCHours(11,59,59,999);
+    const yMid2 = new Date(yesterday).setUTCHours(12,0,0,0);
+    const yEnd = new Date(yesterday).setUTCHours(23,59,59,999);
+
     for (let symbol of ACTIVE_TOKEN_LIST) {
         try {
             const conf = ACTIVE_CONFIG[symbol];
             if (!conf || !conf.contract) continue;
 
-            const urlTot = API_ENDPOINTS.KLINES_TOTAL(conf.chainId || 56, conf.contract);
-            const urlLim = API_ENDPOINTS.KLINES_LIMIT(conf.chainId || 56, conf.contract);
+            const chainId = conf.chainId || 56;
+            const contract = conf.contract;
+
+            // Ca 1 (Sáng)
+            const urlTot1 = API_ENDPOINTS.KLINES_TOTAL(chainId, contract, yStart, yMid1);
+            const urlLim1 = API_ENDPOINTS.KLINES_LIMIT(chainId, contract, yStart, yMid1);
             
-            const [resTot, resLim] = await Promise.all([
-                axios.get(urlTot, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
-                axios.get(urlLim, { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
+            // Ca 2 (Chiều)
+            const urlTot2 = API_ENDPOINTS.KLINES_TOTAL(chainId, contract, yMid2, yEnd);
+            const urlLim2 = API_ENDPOINTS.KLINES_LIMIT(chainId, contract, yMid2, yEnd);
+            
+            // Gọi 4 link cùng lúc
+            const [resTot1, resLim1, resTot2, resLim2] = await Promise.all([
+                axios.get(urlTot1, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
+                axios.get(urlLim1, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
+                axios.get(urlTot2, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
+                axios.get(urlLim2, { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
             ]);
-// --- BẮT ĐẦU DEBUG SNAPSHOT ---
-            if (symbol === "ALPHA_488") { // Thay bằng mã ALPHA của token Stable bạn đang test
-                console.log(`\n=== DEBUG SNAPSHOT ${symbol} ===`);
-                console.log("URL Total gọi:", urlTot);
-                const klines = resTot.data?.data?.klineInfos;
-                console.log("Số lượng nến Total lấy được:", klines ? klines.length : "UNDEFINED hoặc LỖI");
-                if (klines && klines.length > 0) {
-                    console.log("Nến đầu tiên (k[5] USD):", klines[0][5]);
-                } else {
-                    console.log("Toàn bộ cục resTot trả về:", JSON.stringify(resTot.data).substring(0, 300));
-                }
-            }
-            // --- KẾT THÚC DEBUG ---
-            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos);
-            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos);
+
+            const tot1 = resTot1.data?.data?.klineInfos || [];
+            const tot2 = resTot2.data?.data?.klineInfos || [];
+            const lim1 = resLim1.data?.data?.klineInfos || [];
+            const lim2 = resLim2.data?.data?.klineInfos || [];
+
+            // Gộp mảng lại (Tổng 1440 nến) và tính toán
+            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum([...tot1, ...tot2]);
+            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum([...lim1, ...lim2]);
+            
+            console.log(`✅ [${symbol}] Đã lấy đủ đuôi Total: ${tot1.length + tot2.length} nến.`);
             
             await sleep(150); 
         } catch (e) {}
