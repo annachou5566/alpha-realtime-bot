@@ -13,22 +13,22 @@ const FAKE_HEADERS = {
 };
 
 // =====================================================================
-// 🎯 KHU VỰC 1: ĐIỀN CÁC ĐƯỜNG LINK API CỦA BẠN VÀO ĐÂY
+// 🎯 KHU VỰC 1: ĐÃ NÂNG CẤP LÊN API CHUẨN (Dùng chainId + contract)
 // =====================================================================
 const API_ENDPOINTS = {
-    // 1. API Bulk 500 Token (Rolling 24h) - Gọi mỗi 3 giây
+    // 1. API Bulk 500 Token (Rolling 24h) - Giữ nguyên vì nó trả về USD chuẩn
     BULK_TOTAL: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=aggregate",
     BULK_LIMIT: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=limit",
 
-    // 2. API Klines Lịch sử (Dùng để Snapshot Cắt đuôi hôm qua)
-    KLINES_TOTAL: (symbol, start, end) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/klines?symbol=${symbol}USDT&interval=1m&startTime=${start}&endTime=${end}&limit=1500&dataType=aggregate`,
-    KLINES_LIMIT: (symbol, start, end) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/klines?symbol=${symbol}USDT&interval=1m&startTime=${start}&endTime=${end}&limit=1500&dataType=limit`,
+    // 2. API Cắt Đuôi (Lấy 1500 phút mới nhất ~ 25 giờ để trích xuất 24h trước)
+    KLINES_TOTAL: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&limit=1500&tokenAddress=${contract}&dataType=aggregate`,
+    KLINES_LIMIT: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&limit=1500&tokenAddress=${contract}&dataType=limit`,
 
-    // 3. API Klines 1H (Dùng để tính Offset Rác đầu ngày khai mạc)
-    KLINES_1H_OFFSET: (symbol, start, end) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/klines?symbol=${symbol}USDT&interval=1h&startTime=${start}&endTime=${end}&dataType=aggregate`,
+    // 3. API Tính Offset Rác đầu ngày (Dùng aggregate để trừ triệt để)
+    KLINES_1H_OFFSET: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1h&limit=100&tokenAddress=${contract}&dataType=aggregate`,
 
-    // 4. API Klines 1M (Dùng cho Analyzer 10s tính Spread, Flow)
-    KLINES_1M_ANALYZER: (symbol) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/klines?symbol=${symbol}USDT&interval=1m&limit=10`
+    // 4. API Analyzer (Dùng limit để tính spread gộp USDT+USDC)
+    KLINES_1M_ANALYZER: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&limit=10&tokenAddress=${contract}&dataType=limit`
 };
 
 // --- CLIENTS ---
@@ -44,27 +44,24 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 
 app.use(cors({ origin: '*' }));
 
-// --- RAM CACHE (BỘ NHỚ TẠM) ---
-let GLOBAL_MARKET = {};      // Realtime Data 500 Token (3s/lần)
-let ACTIVE_CONFIG = {};      // Config các giải ĐANG CHẠY (Từ Supabase)
-let HISTORY_CACHE = {};      // Các giải ĐÃ KẾT THÚC (Từ R2)
-let BASE_HISTORY_DATA = {};  // Dữ liệu volume quá khứ của giải đang chạy (Từ R2)
-let START_OFFSET_CACHE = {}; // Offset volume rác đầu ngày
+// --- RAM CACHE ---
+let GLOBAL_MARKET = {};      
+let ACTIVE_CONFIG = {};      
+let HISTORY_CACHE = {};      
+let BASE_HISTORY_DATA = {};  
+let START_OFFSET_CACHE = {}; 
 
-// THÊM BIẾN CHO THUẬT TOÁN CẮT ĐUÔI VOLUME
 let SNAPSHOT_TAIL_TOTAL = {}; 
 let SNAPSHOT_TAIL_LIMIT = {}; 
-let ACTIVE_TOKEN_LIST = [];  // Danh sách token cần cắt đuôi
+let ACTIVE_TOKEN_LIST = [];  
 
 const HISTORY_FILE_KEY = "finalized_history.json";
 
-// --- HÀM TIỆN ÍCH ---
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ==========================================
 // 1. CÁC JOB ĐỒNG BỘ DỮ LIỆU NỀN
 // ==========================================
-
 async function syncHistoryFromR2() {
     try {
         const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: HISTORY_FILE_KEY });
@@ -72,16 +69,13 @@ async function syncHistoryFromR2() {
         const str = await resp.Body.transformToString();
         HISTORY_CACHE = JSON.parse(str);
         console.log(`📚 Đã tải HISTORY từ R2: ${Object.keys(HISTORY_CACHE).length} giải đấu.`);
-    } catch (e) {
-        console.log("ℹ️ R2 History trống hoặc chưa tạo được (Sẽ thử lại sau).");
-        HISTORY_CACHE = {}; 
-    }
+    } catch (e) { HISTORY_CACHE = {}; }
 }
 
 async function syncActiveConfig() {
     try {
         const todayStr = new Date().toISOString().split('T')[0];
-        const { data, error } = await supabase.from('tournaments').select('id, data').neq('id', -1);
+        const { data, error } = await supabase.from('tournaments').select('id, contract, data').neq('id', -1);
 
         if (error) throw error;
         if (data) {
@@ -94,6 +88,12 @@ async function syncActiveConfig() {
                 if (meta.end && meta.end < todayStr) isActive = false;
 
                 if (isActive && meta.alphaId) {
+                    // Đảm bảo có contract và chainId
+                    meta.contract = row.contract || meta.contract;
+                    if(!meta.chainId && meta.chain) {
+                        const cMap = {'bsc': 56, 'bnb': 56, 'eth': 1, 'base': 8453, 'arb': 42161, 'op': 10, 'polygon': 137};
+                        meta.chainId = cMap[String(meta.chain).toLowerCase()] || 56;
+                    }
                     newActive[meta.alphaId] = { ...meta, db_id: row.id };
                     if (!newTokens.includes(meta.alphaId)) newTokens.push(meta.alphaId);
                 }
@@ -112,7 +112,7 @@ async function syncBaseData() {
         const str = await resp.Body.transformToString();
         BASE_HISTORY_DATA = JSON.parse(str);
         console.log("✅ Đã tải Base History (Volume nền) từ R2.");
-    } catch (e) { console.log("ℹ️ Không tìm thấy tournaments-base.json (Sẽ thử lại sau)."); }
+    } catch (e) { }
 }
 
 async function checkStartOffsets() {
@@ -121,42 +121,43 @@ async function checkStartOffsets() {
     for (const alphaId in ACTIVE_CONFIG) {
         const conf = ACTIVE_CONFIG[alphaId];
         if (conf.start === todayStr) {
-            if (START_OFFSET_CACHE[alphaId]) continue;
+            if (START_OFFSET_CACHE[alphaId] || !conf.contract) continue;
 
             const startTimeStr = (conf.startTime || "00:00").includes(":") ? conf.startTime : conf.startTime + ":00";
             const startTs = new Date(`${conf.start}T${startTimeStr}Z`).getTime();
             const dayStartTs = new Date(`${conf.start}T00:00:00Z`).getTime();
 
             try {
-                // SỬ DỤNG LINK TỪ CONFIG BÊN TRÊN
-                const url = API_ENDPOINTS.KLINES_1H_OFFSET(alphaId, dayStartTs, startTs);
+                const url = API_ENDPOINTS.KLINES_1H_OFFSET(conf.chainId || 56, conf.contract);
                 const res = await axios.get(url, { headers: FAKE_HEADERS });
                 let offset = 0;
                 if (res.data?.success && res.data.data?.klineInfos) {
-                    res.data.data.klineInfos.forEach(k => offset += parseFloat(k[5]));
+                    res.data.data.klineInfos.forEach(k => {
+                        const kTs = parseInt(k[0]);
+                        if (kTs >= dayStartTs && kTs < startTs) {
+                            offset += parseFloat(k[5]); // agg-klines lấy c[5] làm USD
+                        }
+                    });
                 }
                 START_OFFSET_CACHE[alphaId] = offset;
                 console.log(`⚖️ Đã tính Offset Volume cho ${alphaId}: ${offset}`);
-            } catch (e) { console.error(`Lỗi tính Offset ${alphaId}:`, e.message); }
+            } catch (e) {}
         }
     }
 }
 
 // ==========================================
-// 1.5. THUẬT TOÁN "SNAPSHOT CẮT ĐUÔI"
+// 1.5. THUẬT TOÁN "SNAPSHOT CẮT ĐUÔI" CHUẨN XÁC
 // ==========================================
-function buildSuffixSum(klines) {
+function buildSuffixSum(dataArray) {
     const arr = new Array(1440).fill(0);
-    let dataArray = Array.isArray(klines) ? klines : (klines?.klineInfos || []);
     if (!dataArray || dataArray.length === 0) return arr;
 
     const minuteMap = {};
     dataArray.forEach(k => {
         const date = new Date(parseInt(k[0]));
         const minuteIndex = date.getUTCHours() * 60 + date.getUTCMinutes();
-        
-        // SỬ DỤNG k[7] (Volume USD) ĐỂ CÙNG ĐƠN VỊ VỚI API ROLLING 24H
-        minuteMap[minuteIndex] = Number(k[7] || 0); 
+        minuteMap[minuteIndex] = Number(k[5] || 0); // VÁ LỖI: Lấy k[5] làm USD chuẩn của agg-klines
     });
 
     let runningSum = 0;
@@ -169,51 +170,27 @@ function buildSuffixSum(klines) {
 
 async function runYesterdaySnapshot() {
     console.log("📸 Bắt đầu chụp Snapshot dữ liệu hôm qua để cắt đuôi...");
-    const yesterday = new Date(Date.now() - 86400000);
-    const startTime = new Date(yesterday).setUTCHours(0,0,0,0);
-    const endTime = new Date(yesterday).setUTCHours(23,59,59,999);
-
+    
     for (let symbol of ACTIVE_TOKEN_LIST) {
         try {
-            const urlTot = API_ENDPOINTS.KLINES_TOTAL(symbol, startTime, endTime);
-            const urlLim = API_ENDPOINTS.KLINES_LIMIT(symbol, startTime, endTime);
-            
-            console.log(`🔍 [TEST] Đang gọi API Klines cho: ${symbol}`);
-            console.log(`🔍 [TEST] URL Total: ${urlTot}`);
+            const conf = ACTIVE_CONFIG[symbol];
+            if (!conf || !conf.contract) continue;
 
+            const urlTot = API_ENDPOINTS.KLINES_TOTAL(conf.chainId || 56, conf.contract);
+            const urlLim = API_ENDPOINTS.KLINES_LIMIT(conf.chainId || 56, conf.contract);
+            
             const [resTot, resLim] = await Promise.all([
-                axios.get(urlTot, { headers: FAKE_HEADERS }),
-                axios.get(urlLim, { headers: FAKE_HEADERS })
+                axios.get(urlTot, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
+                axios.get(urlLim, { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
             ]);
 
-            // KIỂM TRA CẤU TRÚC JSON TRẢ VỀ
-            const dataTot = resTot.data;
-            console.log(`🔍 [TEST] Keys trả về từ Total:`, Object.keys(dataTot));
+            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos);
+            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos);
             
-            let arrayTot = dataTot?.data?.klineInfos || dataTot?.data;
-            
-            // XEM LẤY ĐƯỢC BAO NHIÊU NẾN
-            if (Array.isArray(arrayTot)) {
-                console.log(`✅ [TEST] ${symbol} - Đã lấy được ${arrayTot.length} cây nến Total.`);
-                if (arrayTot.length > 0) {
-                    console.log(`✅ [TEST] Volume k[5] nến đầu tiên: ${arrayTot[0][5]}`);
-                }
-            } else {
-                console.log(`⚠️ [TEST] Dữ liệu trả về không phải là mảng. Nội dung:`, JSON.stringify(dataTot).substring(0, 200));
-            }
-
-            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos || resTot.data?.data);
-            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos || resLim.data?.data);
-            
-            await sleep(100); 
-        } catch (e) {
-            console.error(`❌ [TEST] Lỗi tải Snapshot ${symbol}:`, e.message);
-            if (e.response) {
-                console.error(`❌ [TEST] Lỗi chi tiết từ Binance:`, e.response.data);
-            }
-        }
+            await sleep(150); 
+        } catch (e) {}
     }
-    console.log("✅ Snapshot hoàn tất!");
+    console.log("✅ Snapshot cắt đuôi hoàn tất!");
 }
 
 let lastDay = new Date().getUTCDate();
@@ -305,7 +282,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
     return {
         target: Math.round(finalTarget),
         delta: Math.round(deltaVal),
-        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)}) ${usingLimit ? '[LIMIT DATA]' : ''}`,
+        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)})`,
         R: finalK,
         status_label: isFinalized ? "FINALIZED" : "LIVE PREDICTION",
         debug_info: `Vol:${(effectiveVol/1e9).toFixed(2)}B Ticket:$${Math.round(ticketSize)}`,
@@ -319,8 +296,6 @@ function calculateAiPrediction(staticData, accumulatedData) {
 async function finalizeTournament(alphaId, finalData, predictionResult) {
     const config = ACTIVE_CONFIG[alphaId];
     if (!config || HISTORY_CACHE[alphaId]) return;
-
-    console.log(`🏁 ĐANG CHỐT SỔ GIẢI ĐẤU: ${alphaId}...`);
 
     const finalObj = {
         ...config,
@@ -340,26 +315,18 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
         last_updated_ts: Date.now()
     };
 
-    try {
-        await supabase.from('tournaments').update({ data: finalObj }).eq('id', config.db_id);
-    } catch (e) {}
-
+    try { await supabase.from('tournaments').update({ data: finalObj }).eq('id', config.db_id); } catch (e) {}
     HISTORY_CACHE[alphaId] = finalObj;
     delete ACTIVE_CONFIG[alphaId];
 
     try {
-        const cmd = new PutObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: HISTORY_FILE_KEY,
-            Body: JSON.stringify(HISTORY_CACHE),
-            ContentType: "application/json"
-        });
+        const cmd = new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: HISTORY_FILE_KEY, Body: JSON.stringify(HISTORY_CACHE), ContentType: "application/json" });
         await s3Client.send(cmd);
     } catch (e) {}
 }
 
 // ==========================================
-// 4. VÒNG LẶP REALTIME (TÍCH HỢP CẮT ĐUÔI)
+// 4. VÒNG LẶP REALTIME (BẮT ĐÚNG TX VÀ CẮT ĐUÔI)
 // ==========================================
 async function loopRealtime() {
     try {
@@ -373,8 +340,12 @@ async function loopRealtime() {
             const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
 
             const limitMap = {};
+            const limitTxMap = {}; // VÁ LỖI: Map riêng để bắt TX từ mảng Limit
             if (resLim.data?.success) {
-                resLim.data.data.forEach(t => limitMap[t.alphaId] = parseFloat(t.volume24h || 0));
+                resLim.data.data.forEach(t => {
+                    limitMap[t.alphaId] = parseFloat(t.volume24h || 0);
+                    limitTxMap[t.alphaId] = parseFloat(t.count24h || 0); // Lấy số lệnh chuẩn xác
+                });
             }
 
             resTot.data.data.forEach(t => {
@@ -392,16 +363,19 @@ async function loopRealtime() {
 
                 if (dailyTot < 0) dailyTot = 0;
                 if (dailyLim < 0) dailyLim = 0;
+                
+                // Toán học tuyệt đối: Total không thể nhỏ hơn Limit
+                if (dailyTot < dailyLim) dailyTot = dailyLim;
 
                 GLOBAL_MARKET[id] = {
                     p: parseFloat(t.price || 0),
                     c: parseFloat(t.percentChange24h || t.priceChangePercent || 0), 
                     r24: rollVolTot,                                               
                     l: parseFloat(t.liquidity || 0),                             
-                    mc: parseFloat(t.marketCap || 0),                                
-                    h: parseInt(t.holders || t.holderCount || 0),                    
+                    mc: parseFloat(t.marketCap || 0),                              
+                    h: parseInt(t.holders || t.holderCount || 0),                  
                     v: { dt: dailyTot, dl: dailyLim }, 
-                    tx: parseFloat(t.count24h || 0),
+                    tx: limitTxMap[id] || 0, // VÁ LỖI: Gán TX chuẩn từ mảng Limit
                     analysis: GLOBAL_MARKET[id]?.analysis 
                 };
             });
@@ -411,6 +385,9 @@ async function loopRealtime() {
     setTimeout(loopRealtime, 3000); 
 }
 
+// ==========================================
+// 5. VÒNG LẶP ANALYZER (AI DỰ ĐOÁN LỰC MUA)
+// ==========================================
 async function loopAnalyzer() {
     const activeIds = Object.keys(ACTIVE_CONFIG);
     const BATCH_SIZE = 5;
@@ -418,22 +395,25 @@ async function loopAnalyzer() {
         const batch = activeIds.slice(i, i + BATCH_SIZE);
         await Promise.all(batch.map(async (id) => {
             try {
-                // SỬ DỤNG LINK TỪ CONFIG BÊN TRÊN
-                const url = API_ENDPOINTS.KLINES_1M_ANALYZER(id);
+                const conf = ACTIVE_CONFIG[id];
+                if(!conf || !conf.contract) return;
+
+                const url = API_ENDPOINTS.KLINES_1M_ANALYZER(conf.chainId || 56, conf.contract);
                 const res = await axios.get(url, { headers: FAKE_HEADERS, timeout: 3000 });
                 
-                if (res.data?.success && res.data.data?.length > 0) {
-                    const klines = res.data.data;
+                if (res.data?.success && res.data.data?.klineInfos?.length > 0) {
+                    const klines = res.data.data.klineInfos;
                     const last = klines[klines.length - 1];
                     const high = parseFloat(last[2]), low = parseFloat(last[3]);
                     const spread = low > 0 ? ((high - low) / low) * 100 : 0;
 
                     const last5 = klines.slice(-5);
-                    let sumVol = 0, sumTx = 0;
-                    last5.forEach(k => { sumVol += parseFloat(k[7] || 0); sumTx += parseFloat(k[8] || 0); });
+                    let sumVol = 0;
+                    // Lấy c[5] làm USD (Không có TX trong mảng này nên AI chủ yếu dùng Vol/Flow)
+                    last5.forEach(k => { sumVol += parseFloat(k[5] || 0); });
                     
                     const speed = sumVol / 300; 
-                    const ticket = sumTx > 0 ? sumVol / sumTx : 0;
+                    const ticket = GLOBAL_MARKET[id]?.tx > 0 ? sumVol / (GLOBAL_MARKET[id]?.tx * 0.05) : 0; // Ước tính ticket
 
                     if (!GLOBAL_MARKET[id]) GLOBAL_MARKET[id] = {};
                     GLOBAL_MARKET[id].analysis = { spread, speed, ticket };
@@ -446,7 +426,7 @@ async function loopAnalyzer() {
 }
 
 // ==========================================
-// 5. API ENDPOINTS
+// 6. API TRẢ DỮ LIỆU CHO FRONTEND
 // ==========================================
 app.get('/api/market-data', (req, res) => {
     res.json({ success: true, count: Object.keys(GLOBAL_MARKET).length, data: GLOBAL_MARKET });
@@ -463,7 +443,6 @@ app.get('/api/competition-data', (req, res) => {
         const base = BASE_HISTORY_DATA[alphaId] || {};
         const real = GLOBAL_MARKET[alphaId] || {};
         
-        // 1. ÉP KIỂU SỐ CHO TẤT CẢ BIẾN ĐẦU VÀO ĐỂ TRÁNH LỖI NỐI CHUỖI
         const offset = parseFloat(START_OFFSET_CACHE[alphaId] || 0);
         const todayVol = parseFloat(real.v?.dt || 0);
         const todayLimit = parseFloat(real.v?.dl || 0);
@@ -473,7 +452,6 @@ app.get('/api/competition-data', (req, res) => {
         let effectiveTodayVol = todayVol;
         if (config.start === nowStr) effectiveTodayVol = Math.max(0, todayVol - offset);
 
-        // 2. TÍNH VOLUME TÍCH LŨY (Đã khai báo baseTotal ở trên nên không bị lỗi Reference)
         const totalAccumulated = baseTotal + effectiveTodayVol;
         const limitAccumulated = baseLimit + todayLimit;  
         
@@ -482,17 +460,12 @@ app.get('/api/competition-data', (req, res) => {
         if (existingToday) existingToday.vol = effectiveTodayVol;
         else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
 
-        // 3. TÍNH TX TÍCH LŨY (Bổ sung parseFloat cho TX để chống lỗi)
         const realTx = parseFloat(real.tx || 0);
-        const limitTxAccumulated = parseFloat(base.base_limit_tx || 0) + (realTx * 0.5);
+        const limitTxAccumulated = parseFloat(base.base_limit_tx || 0) + realTx; 
         const totalTxAccumulated = parseFloat(base.base_total_tx || 0) + realTx;
 
         const aiResult = calculateAiPrediction(config, {
-            totalAccumulated,
-            limitAccumulated,
-            limitTx: limitTxAccumulated,
-            totalTx: totalTxAccumulated,
-            analysis: real.analysis || {}
+            totalAccumulated, limitAccumulated, limitTx: limitTxAccumulated, totalTx: totalTxAccumulated, analysis: real.analysis || {}
         });
 
         responseData[alphaId] = {
@@ -500,10 +473,7 @@ app.get('/api/competition-data', (req, res) => {
             price: real.p !== undefined ? real.p : config.price,
             change_24h: real.c !== undefined ? real.c : config.change_24h,
             liquidity: real.l !== undefined ? real.l : config.liquidity,
-            volume: {
-                ...(config.volume || {}),
-                rolling_24h: real.r24 !== undefined ? real.r24 : (config.volume?.rolling_24h || 0)
-            },
+            volume: { ...(config.volume || {}), rolling_24h: real.r24 !== undefined ? real.r24 : (config.volume?.rolling_24h || 0) },
             total_accumulated_volume: totalAccumulated,
             limit_accumulated_volume: limitAccumulated,
             real_alpha_volume: effectiveTodayVol,
@@ -512,13 +482,10 @@ app.get('/api/competition-data', (req, res) => {
             real_vol_history: historyArr,
             market_analysis: real.analysis || { label: "WAIT..." },
             ai_prediction: aiResult
-       
         };
 
         if (aiResult.is_finalized) {
-            finalizeTournament(alphaId, {
-                totalAccumulated, limitAccumulated, limitTx: limitTxAccumulated, totalTx: totalTxAccumulated
-            }, aiResult);
+            finalizeTournament(alphaId, { totalAccumulated, limitAccumulated, limitTx: limitTxAccumulated, totalTx: totalTxAccumulated }, aiResult);
         }
     });
 
@@ -528,20 +495,15 @@ app.get('/api/competition-data', (req, res) => {
 app.get('/api/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).json({ error: "Thiếu tham số url" });
-
     try {
-        const response = await axios.get(targetUrl, {
-            headers: FAKE_HEADERS,
-            timeout: 10000 // Tối đa 10s
-        });
+        const response = await axios.get(targetUrl, { headers: FAKE_HEADERS, timeout: 10000 });
         res.json(response.data);
     } catch (e) {
-        console.error("⚠️ Proxy Lỗi khi gọi:", targetUrl, "->", e.message);
         res.status(500).json({ error: e.message });
     }
 });
 
-// START SERVER VÀ CÁC CRON JOBS
+// START SERVER
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
     
@@ -550,7 +512,6 @@ app.listen(PORT, async () => {
     await syncBaseData();
     await checkStartOffsets();
     
-    // Nạp đạn Snapshot cho các giải đang chạy trước khi bắt đầu Realtime
     await runYesterdaySnapshot();
     
     loopRealtime();
