@@ -20,10 +20,10 @@ const API_ENDPOINTS = {
     BULK_TOTAL: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=aggregate",
     BULK_LIMIT: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=limit",
 
-    // 2. API Cắt Đuôi (Lách luật 1000 nến bằng cách chia làm 2 lần gọi)
-    KLINES_TOTAL: (chainId, contract, start, end) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&startTime=${start}&endTime=${end}&limit=1000&tokenAddress=${contract}&dataType=aggregate`,
-    KLINES_LIMIT: (chainId, contract, start, end) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&startTime=${start}&endTime=${end}&limit=1000&tokenAddress=${contract}&dataType=limit`,
-
+    // ĐỔI THÀNH interval=5m ĐỂ LẤY ĐƯỢC 3 NGÀY MÀ KHÔNG CẦN STARTTIME
+    KLINES_TOTAL: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=5m&limit=1000&tokenAddress=${contract}&dataType=aggregate`,
+    KLINES_LIMIT: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=5m&limit=1000&tokenAddress=${contract}&dataType=limit`,
+    
     // 3. API Tính Offset Rác đầu ngày (Dùng aggregate để trừ triệt để)
     KLINES_1H_OFFSET: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1h&limit=100&tokenAddress=${contract}&dataType=aggregate`,
 
@@ -153,31 +153,40 @@ function buildSuffixSum(dataArray) {
     const arr = new Array(1440).fill(0);
     if (!dataArray || dataArray.length === 0) return arr;
 
-    const minuteMap = {};
+    const minuteMap = new Array(1440).fill(0);
+    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+
     dataArray.forEach(k => {
-        const date = new Date(parseInt(k[0]));
-        const minuteIndex = date.getUTCHours() * 60 + date.getUTCMinutes();
-        minuteMap[minuteIndex] = Number(k[5] || 0); // agg-klines lấy k[5] làm USD
+        const candleTs = parseInt(k[0]);
+        const dateObj = new Date(candleTs);
+        const dStr = dateObj.toISOString().split('T')[0];
+        
+        // Chỉ bốc Volume của ngày hôm qua
+        if (dStr === yesterdayStr) {
+            const h = dateObj.getUTCHours();
+            const m = dateObj.getUTCMinutes();
+            const startMin = h * 60 + m;
+            
+            // Nến 5 phút, ta chia nhỏ Volume ra cho 5 phút để trừ dần cho mượt
+            const volPerMin = Number(k[5] || 0) / 5; 
+            
+            for (let i = 0; i < 5; i++) {
+                if (startMin + i < 1440) minuteMap[startMin + i] += volPerMin;
+            }
+        }
     });
 
     let runningSum = 0;
     for (let i = 1439; i >= 0; i--) {
-        runningSum += (minuteMap[i] || 0);
+        runningSum += minuteMap[i];
         arr[i] = runningSum;
     }
     return arr;
 }
 
 async function runYesterdaySnapshot() {
-    console.log("📸 Bắt đầu chụp Snapshot cắt đuôi (Chia 2 ca Sáng/Chiều)...");
+    console.log("📸 Bắt đầu chụp Snapshot cắt đuôi (Dùng nến 5 phút)...");
     
-    // Set 4 mốc thời gian để chia ngày làm 2 nửa
-    const yesterday = new Date(Date.now() - 86400000);
-    const yStart = new Date(yesterday).setUTCHours(0,0,0,0);
-    const yMid1 = new Date(yesterday).setUTCHours(11,59,59,999);
-    const yMid2 = new Date(yesterday).setUTCHours(12,0,0,0);
-    const yEnd = new Date(yesterday).setUTCHours(23,59,59,999);
-
     for (let symbol of ACTIVE_TOKEN_LIST) {
         try {
             const conf = ACTIVE_CONFIG[symbol];
@@ -186,33 +195,22 @@ async function runYesterdaySnapshot() {
             const chainId = conf.chainId || 56;
             const contract = conf.contract;
 
-            // Ca 1 (Sáng)
-            const urlTot1 = API_ENDPOINTS.KLINES_TOTAL(chainId, contract, yStart, yMid1);
-            const urlLim1 = API_ENDPOINTS.KLINES_LIMIT(chainId, contract, yStart, yMid1);
+            // Chỉ cần gọi 1 link duy nhất là đủ bao trọn ngày hôm qua
+            const urlTot = API_ENDPOINTS.KLINES_TOTAL(chainId, contract);
+            const urlLim = API_ENDPOINTS.KLINES_LIMIT(chainId, contract);
             
-            // Ca 2 (Chiều)
-            const urlTot2 = API_ENDPOINTS.KLINES_TOTAL(chainId, contract, yMid2, yEnd);
-            const urlLim2 = API_ENDPOINTS.KLINES_LIMIT(chainId, contract, yMid2, yEnd);
-            
-            // Gọi 4 link cùng lúc
-            const [resTot1, resLim1, resTot2, resLim2] = await Promise.all([
-                axios.get(urlTot1, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
-                axios.get(urlLim1, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
-                axios.get(urlTot2, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
-                axios.get(urlLim2, { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
+            const [resTot, resLim] = await Promise.all([
+                axios.get(urlTot, { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
+                axios.get(urlLim, { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
             ]);
 
-            const tot1 = resTot1.data?.data?.klineInfos || [];
-            const tot2 = resTot2.data?.data?.klineInfos || [];
-            const lim1 = resLim1.data?.data?.klineInfos || [];
-            const lim2 = resLim2.data?.data?.klineInfos || [];
+            const totData = resTot.data?.data?.klineInfos || [];
+            const limData = resLim.data?.data?.klineInfos || [];
 
-            // Gộp mảng lại (Tổng 1440 nến) và tính toán
-            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum([...tot1, ...tot2]);
-            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum([...lim1, ...lim2]);
+            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(totData);
+            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(limData);
             
-            console.log(`✅ [${symbol}] Đã lấy đủ đuôi Total: ${tot1.length + tot2.length} nến.`);
-            
+            console.log(`✅ [${symbol}] Snapshot OK: Total ${totData.length} nến, Limit ${limData.length} nến.`);
             await sleep(150); 
         } catch (e) {}
     }
