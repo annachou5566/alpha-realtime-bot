@@ -123,7 +123,7 @@ async function checkStartOffsets() {
                 if (res.data?.success && res.data.data?.klineInfos) {
                     res.data.data.klineInfos.forEach(k => {
                         const kTs = parseInt(k[0]);
-                        if (kTs >= dayStartTs && kTs < startTs) offset += parseFloat(k[7]);
+                        if (kTs >= dayStartTs && kTs < startTs) offset += parseFloat(k[5]);
                     });
                 }
                 START_OFFSET_CACHE[alphaId] = offset;
@@ -147,7 +147,7 @@ function buildSuffixSum(dataArray) {
         const dateObj = new Date(candleTs);
         if (dateObj.toISOString().split('T')[0] === yesterdayStr) {
             const startMin = dateObj.getUTCHours() * 60 + dateObj.getUTCMinutes();
-            const volPerMin = Number(k[7] || 0) / 5; 
+            const volPerMin = Number(k[5] || 0) / 5; 
             for (let i = 0; i < 5; i++) {
                 if (startMin + i < 1440) minuteMap[startMin + i] += volPerMin;
             }
