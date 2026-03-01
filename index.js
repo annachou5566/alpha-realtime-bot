@@ -135,51 +135,76 @@ async function checkStartOffsets() {
 // ==========================================
 // 1.5. THUẬT TOÁN "SNAPSHOT CẮT ĐUÔI" 
 // ==========================================
-function buildSuffixSum(dataArray) {
-    const arr = new Array(1440).fill(0);
-    if (!dataArray || dataArray.length === 0) return arr;
-
-    const minuteMap = new Array(1440).fill(0);
-    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-
-    dataArray.forEach(k => {
-        const candleTs = parseInt(k[0]);
-        const dateObj = new Date(candleTs);
-        if (dateObj.toISOString().split('T')[0] === yesterdayStr) {
-            const startMin = dateObj.getUTCHours() * 60 + dateObj.getUTCMinutes();
-            const volPerMin = Number(k[5] || 0) / 5; 
-            for (let i = 0; i < 5; i++) {
-                if (startMin + i < 1440) minuteMap[startMin + i] += volPerMin;
+function buildSuffixSum(klines) {
+    const tail = new Array(1440).fill(0);
+    
+    // Xác định mốc thời gian (UTC)
+    const now = new Date();
+    const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).getTime();
+    const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+    
+    // 1. Tạo mảng 1440 phút chứa Volume chuẩn của từng phút ngày hôm qua
+    const minuteVols = new Array(1440).fill(0);
+    
+    for (let k of klines) {
+        const ts = parseInt(k[0]);
+        const vol = parseFloat(k[5] || 0); // Vẫn dùng k[5] - Chuẩn USD của Aggregate
+        
+        // Chỉ lấy những cây nến nằm trọn trong ngày hôm qua
+        if (ts >= startOfYesterday && ts < startOfToday) {
+            // Tính xem nó là phút thứ mấy trong ngày (0 -> 1439)
+            const minIndex = Math.floor((ts - startOfYesterday) / 60000);
+            if (minIndex >= 0 && minIndex < 1440) {
+                minuteVols[minIndex] += vol; // Không chia 5 gì nữa, nến 1 phút là chuẩn luôn!
             }
         }
-    });
-
+    }
+    
+    // 2. Tính Suffix Sum (Cộng dồn ngược từ 23:59 về 00:00)
+    // tail[m] = Tổng Volume từ phút 'm' đến hết ngày hôm qua
     let runningSum = 0;
     for (let i = 1439; i >= 0; i--) {
-        runningSum += minuteMap[i];
-        arr[i] = runningSum;
+        runningSum += minuteVols[i];
+        tail[i] = runningSum;
     }
-    return arr;
+    
+    return tail;
 }
 
 async function runYesterdaySnapshot() {
-    console.log("📸 Bắt đầu chụp Snapshot cắt đuôi...");
+    console.log("📸 Bắt đầu chụp Snapshot cắt đuôi (Nến 1m - Quét 2 nhịp)...");
     for (let symbol of ACTIVE_TOKEN_LIST) {
         try {
             const conf = ACTIVE_CONFIG[symbol];
             if (!conf || !conf.contract) continue;
 
-            const [resTot, resLim] = await Promise.all([
-                axios.get(API_ENDPOINTS.KLINES_TOTAL(conf.chainId || 56, conf.contract), { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
-                axios.get(API_ENDPOINTS.KLINES_LIMIT(conf.chainId || 56, conf.contract), { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
-            ]);
+            // Link API gốc với nến 1 phút, chuẩn Aggregate
+            const baseUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${conf.chainId || 56}&interval=1m&limit=1000&tokenAddress=${conf.contract}&dataType=aggregate`;
+            
+            // 🚀 NHỊP 1: Lấy 1000 nến gần nhất (khoảng 16 tiếng qua)
+            const res1 = await axios.get(baseUrl, { headers: FAKE_HEADERS }).catch(()=>({data:{}}));
+            let klines = res1.data?.data?.klineInfos || [];
 
-            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos || []);
-            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos || []);
-            await sleep(150); 
-        } catch (e) {}
+            // 🚀 NHỊP 2: Lấy thêm 1000 nến trước đó (để bao trọn đủ 24h hôm qua)
+            if (klines.length > 0) {
+                const firstCandleTs = klines[0][0]; // Lấy timestamp của cây nến cũ nhất ở Nhịp 1
+                // Gọi tiếp API, truyền endTime để lùi về trước đó
+                const res2 = await axios.get(`${baseUrl}&endTime=${firstCandleTs - 1}`, { headers: FAKE_HEADERS }).catch(()=>({data:{}}));
+                const olderKlines = res2.data?.data?.klineInfos || [];
+                
+                // Ghép 2 mảng lại với nhau (Cũ trước, Mới sau)
+                klines = [...olderKlines, ...klines];
+            }
+
+            // Đưa cục 2000 nến 1 phút vào máy xay Suffix Sum
+            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(klines);
+            
+            await sleep(200); // Ngủ 200ms để không bị Binance chặn IP
+        } catch (e) {
+            console.error(`❌ Lỗi snapshot 1m cho ${symbol}:`, e.message);
+        }
     }
-    console.log("✅ Snapshot cắt đuôi hoàn tất!");
+    console.log("✅ Snapshot cắt đuôi 1m hoàn tất!");
 }
 
 let lastDay = new Date().getUTCDate();
