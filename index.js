@@ -13,7 +13,7 @@ const FAKE_HEADERS = {
 };
 
 // =====================================================================
-// 🎯 KHU VỰC 1: API CHUẨN (ĐÃ XÓA API 1 PHÚT VÔ ÍCH)
+// 🎯 KHU VỰC 1: API CHUẨN
 // =====================================================================
 const API_ENDPOINTS = {
     BULK_TOTAL: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=aggregate",
@@ -45,7 +45,7 @@ let SNAPSHOT_TAIL_TOTAL = {};
 let SNAPSHOT_TAIL_LIMIT = {}; 
 let ACTIVE_TOKEN_LIST = [];  
 
-// [MỚI] BỘ NHỚ LƯU VẾT AI CHO "KHẨU QUYẾT 3-9-60"
+// BỘ NHỚ LƯU VẾT AI CHO "KHẨU QUYẾT 3-9-60"
 let TOKEN_METRICS_HISTORY = {}; 
 
 const HISTORY_FILE_KEY = "finalized_history.json";
@@ -123,7 +123,7 @@ async function checkStartOffsets() {
                 if (res.data?.success && res.data.data?.klineInfos) {
                     res.data.data.klineInfos.forEach(k => {
                         const kTs = parseInt(k[0]);
-                        if (kTs >= dayStartTs && kTs < startTs) offset += parseFloat(k[5]);
+                        if (kTs >= dayStartTs && kTs < startTs) offset += parseFloat(k[5] || 0);
                     });
                 }
                 START_OFFSET_CACHE[alphaId] = offset;
@@ -216,7 +216,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
         if (now < endDate && !isFinalized) {
             const diffSeconds = (endDate.getTime() - now.getTime()) / 1000;
             let velocity = 0;
-            if (accumulatedData.analysis && accumulatedData.analysis.speed60s) { // Dùng speed60s mới
+            if (accumulatedData.analysis && accumulatedData.analysis.speed60s) {
                 velocity = accumulatedData.analysis.speed60s;
                 if (usingLimit && currentVol > 0 && staticData.total_accumulated_volume > 0) {
                      velocity = velocity * (currentVol / staticData.total_accumulated_volume);
@@ -236,7 +236,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
     let ticketSize = 0;
     if (usingLimit && accumulatedData.limitTx > 0) ticketSize = currentVol / accumulatedData.limitTx;
     else if (accumulatedData.totalTx > 0) ticketSize = currentVol / accumulatedData.totalTx;
-    else if (accumulatedData.analysis && accumulatedData.analysis.ticket3s) ticketSize = accumulatedData.analysis.ticket3s; // Dùng ticket3s mới
+    else if (accumulatedData.analysis && accumulatedData.analysis.ticket3s) ticketSize = accumulatedData.analysis.ticket3s;
 
     const k = 1.03;
     const winners = parseInt(staticData.topWinners || 5000);
@@ -311,7 +311,7 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 }
 
 // ==========================================
-// 4. VÒNG LẶP REALTIME & TÍCH HỢP "AI 3-9-60"
+// 4. VÒNG LẶP REALTIME
 // ==========================================
 async function loopRealtime() {
     try {
@@ -344,7 +344,7 @@ async function loopRealtime() {
                 const currentTx = limitTxMap[id] || 0;
 
                 // --- 1. TÍNH DAILY VOL BẰNG CÁCH CẮT ĐUÔI ---
-                // (Chỉ những con trong ACTIVE_TOKEN_LIST mới có Đuôi, còn lại Đuôi = 0)
+                // Chỉ những con trong giải đấu mới có cái Đuôi này
                 const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
                 const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
 
@@ -422,24 +422,6 @@ async function loopRealtime() {
 
                 // Gắn chỉ báo AI cho riêng Token thi đấu
                 GLOBAL_MARKET[id].analysis = { spread: spread15s, trend: trend60s, drop: dropFromPeak, netFlow: netFlow60s, speed: speed60s, ticket: ticket3s }; 
-            });
-        }
-    } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
-    setTimeout(loopRealtime, 3000); 
-}
-
-                GLOBAL_MARKET[id] = {
-                    p: currentPrice,
-                    c: parseFloat(t.percentChange24h || t.priceChangePercent || 0), 
-                    r24: rollVolTot,                                               
-                    l: parseFloat(t.liquidity || 0),                             
-                    mc: parseFloat(t.marketCap || 0),                              
-                    h: parseInt(t.holders || t.holderCount || 0),                  
-                    v: { dt: dailyTot, dl: dailyLim }, 
-                    tx: currentTx, 
-                    // Nạp bộ thông số ĐÃ CHUẨN HÓA lên Frontend
-                    analysis: { spread: spread15s, trend: trend60s, drop: dropFromPeak, netFlow: netFlow60s, speed: speed60s, ticket: ticket3s } 
-                };
             });
         }
     } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
@@ -531,6 +513,6 @@ app.listen(PORT, async () => {
     loopRealtime(); // Chạy duy nhất 1 nhịp đập 3s
     
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
-    setInterval(syncBaseData, 30 * 60 * 1000);    
+    setInterval(syncBaseData, 30 * 60 * 1000);   
     setInterval(checkStartOffsets, 15 * 60 * 1000); 
 });
