@@ -336,13 +336,15 @@ async function loopRealtime() {
 
             resTot.data.data.forEach(t => {
                 const id = t.alphaId;
-                if (!id || !ACTIVE_CONFIG[id]) return; // Chỉ tính toán cho các token đang ACTIVE
+                if (!id) return;
                 
                 const rollVolTot = parseFloat(t.volume24h || 0);
                 const rollVolLim = limitMap[id] || 0;
                 const currentPrice = parseFloat(t.price || 0);
                 const currentTx = limitTxMap[id] || 0;
 
+                // --- 1. TÍNH DAILY VOL BẰNG CÁCH CẮT ĐUÔI ---
+                // (Chỉ những con trong ACTIVE_TOKEN_LIST mới có Đuôi, còn lại Đuôi = 0)
                 const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
                 const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
 
@@ -351,34 +353,48 @@ async function loopRealtime() {
                 if (dailyTot < dailyLim) dailyTot = dailyLim; 
 
                 // ====================================================
-                // 🧠 BỘ NÃO AI: THỰC THI KHẨU QUYẾT MỚI (BẮT RÂU NẾN)
+                // KHU VỰC 1: CẬP NHẬT TẤT CẢ (Cho Tab Alpha Market)
                 // ====================================================
+                GLOBAL_MARKET[id] = {
+                    p: currentPrice,
+                    c: parseFloat(t.percentChange24h || t.priceChangePercent || 0),
+                    r24: rollVolTot,
+                    l: parseFloat(t.liquidity || 0),
+                    mc: parseFloat(t.marketCap || 0),
+                    h: parseInt(t.holders || t.holderCount || 0),
+                    tx: currentTx,
+                    v: { dt: dailyTot, dl: dailyLim } // Bơm Daily Vol xịn vào đây
+                };
+
+                // ====================================================
+                // KHU VỰC 2: CHẶN LẠI! CHỈ TÍNH AI CHO TOKEN THI ĐẤU
+                // ====================================================
+                if (!ACTIVE_CONFIG[id]) return; 
+
+                // --- BỘ NÃO AI 3-9-60 ---
                 let history = TOKEN_METRICS_HISTORY[id] || [];
                 let buyVol3s = 0, sellVol3s = 0, tickVol3s = 0, tickTx3s = 0;
 
                 if (history.length > 0) {
                     const lastData = history[history.length - 1];
-                    if (dailyTot >= lastData.v) {
-                        tickVol3s = dailyTot - lastData.v;
+                    if (rollVolTot >= lastData.v) {
+                        tickVol3s = rollVolTot - lastData.v;
                         tickTx3s = currentTx - lastData.tx;
                         if (currentPrice >= lastData.p) buyVol3s = tickVol3s;
                         else sellVol3s = tickVol3s;
                     } else {
-                        history = []; // Reset qua ngày mới
+                        history = []; 
                     }
                 }
-
-                history.push({ ts: currentTs, p: currentPrice, v: dailyTot, tx: currentTx, buyV: buyVol3s, sellV: sellVol3s, tickTx: tickTx3s });
-                history = history.filter(h => currentTs - h.ts <= 60000); // Lưu chuẩn 60s
+                history.push({ ts: currentTs, p: currentPrice, v: rollVolTot, tx: currentTx, buyV: buyVol3s, sellV: sellVol3s, tickTx: tickTx3s });
+                history = history.filter(h => currentTs - h.ts <= 60000); 
                 TOKEN_METRICS_HISTORY[id] = history;
 
                 let spread15s = 0, trend60s = 0, dropFromPeak = 0, netFlow60s = 0, speed60s = 0, ticket3s = 0;
-
                 if (history.length > 1) {
                     const oldest60s = history[0];
                     const newest = history[history.length - 1];
 
-                    // --- 1. KHUNG 60 GIÂY (Toàn cảnh & Dòng tiền) ---
                     let totalBuy60s = 0, totalSell60s = 0;
                     let maxP60 = -1, minP60 = Infinity;
 
@@ -392,17 +408,10 @@ async function loopRealtime() {
                     netFlow60s = totalBuy60s - totalSell60s; 
                     const deltaTs60s = (newest.ts - oldest60s.ts) / 1000;
                     if (deltaTs60s > 0) speed60s = (newest.v - oldest60s.v) / deltaTs60s; 
-
-                    // CHỈ BÁO TREND CHUẨN NẾN 1 PHÚT
                     if (oldest60s.p > 0) trend60s = ((newest.p - oldest60s.p) / oldest60s.p) * 100;
-                    
-                    // CHỈ BÁO ĐẢO CHIỀU (Khoảng cách từ Giá hiện tại rơi khỏi Đỉnh 1 phút)
-                    if (maxP60 !== -1 && maxP60 > 0) dropFromPeak = ((newest.p - maxP60) / maxP60) * 100; // Ra số âm
-
-                    // --- 2. KHUNG 3 GIÂY (Whale Tracker) ---
+                    if (maxP60 !== -1 && maxP60 > 0) dropFromPeak = ((newest.p - maxP60) / maxP60) * 100; 
                     if (tickTx3s > 0) ticket3s = tickVol3s / tickTx3s;
 
-                    // --- 3. KHUNG 15 GIÂY (Spread thực chiến - Dùng 15s để loại bỏ nhiễu) ---
                     const history15s = history.filter(h => currentTs - h.ts <= 15000);
                     if (history15s.length > 0) {
                         let maxP15 = -1, minP15 = Infinity;
@@ -410,7 +419,14 @@ async function loopRealtime() {
                         if (minP15 > 0 && maxP15 !== -1 && minP15 !== Infinity) spread15s = ((maxP15 - minP15) / minP15) * 100;
                     }
                 }
-                // ====================================================
+
+                // Gắn chỉ báo AI cho riêng Token thi đấu
+                GLOBAL_MARKET[id].analysis = { spread: spread15s, trend: trend60s, drop: dropFromPeak, netFlow: netFlow60s, speed: speed60s, ticket: ticket3s }; 
+            });
+        }
+    } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
+    setTimeout(loopRealtime, 3000); 
+}
 
                 GLOBAL_MARKET[id] = {
                     p: currentPrice,
