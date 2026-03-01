@@ -13,15 +13,14 @@ const FAKE_HEADERS = {
 };
 
 // =====================================================================
-// 🎯 KHU VỰC 1: API CHUẨN (Dùng chainId + contract)
+// 🎯 KHU VỰC 1: API CHUẨN (ĐÃ XÓA API 1 PHÚT VÔ ÍCH)
 // =====================================================================
 const API_ENDPOINTS = {
     BULK_TOTAL: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=aggregate",
     BULK_LIMIT: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=limit",
     KLINES_TOTAL: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=5m&limit=1000&tokenAddress=${contract}&dataType=aggregate`,
     KLINES_LIMIT: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=5m&limit=1000&tokenAddress=${contract}&dataType=limit`,
-    KLINES_1H_OFFSET: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1h&limit=100&tokenAddress=${contract}&dataType=aggregate`,
-    KLINES_1M_ANALYZER: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&limit=10&tokenAddress=${contract}&dataType=limit`
+    KLINES_1H_OFFSET: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1h&limit=100&tokenAddress=${contract}&dataType=aggregate`
 };
 
 const s3Client = new S3Client({
@@ -45,6 +44,9 @@ let START_OFFSET_CACHE = {};
 let SNAPSHOT_TAIL_TOTAL = {}; 
 let SNAPSHOT_TAIL_LIMIT = {}; 
 let ACTIVE_TOKEN_LIST = [];  
+
+// [MỚI] BỘ NHỚ LƯU VẾT AI CHO "KHẨU QUYẾT 3-9-60"
+let TOKEN_METRICS_HISTORY = {}; 
 
 const HISTORY_FILE_KEY = "finalized_history.json";
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -214,8 +216,8 @@ function calculateAiPrediction(staticData, accumulatedData) {
         if (now < endDate && !isFinalized) {
             const diffSeconds = (endDate.getTime() - now.getTime()) / 1000;
             let velocity = 0;
-            if (accumulatedData.analysis && accumulatedData.analysis.speed) {
-                velocity = accumulatedData.analysis.speed;
+            if (accumulatedData.analysis && accumulatedData.analysis.speed60s) { // Dùng speed60s mới
+                velocity = accumulatedData.analysis.speed60s;
                 if (usingLimit && currentVol > 0 && staticData.total_accumulated_volume > 0) {
                      velocity = velocity * (currentVol / staticData.total_accumulated_volume);
                 }
@@ -234,7 +236,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
     let ticketSize = 0;
     if (usingLimit && accumulatedData.limitTx > 0) ticketSize = currentVol / accumulatedData.limitTx;
     else if (accumulatedData.totalTx > 0) ticketSize = currentVol / accumulatedData.totalTx;
-    else if (accumulatedData.analysis && accumulatedData.analysis.ticket) ticketSize = accumulatedData.analysis.ticket;
+    else if (accumulatedData.analysis && accumulatedData.analysis.ticket3s) ticketSize = accumulatedData.analysis.ticket3s; // Dùng ticket3s mới
 
     const k = 1.03;
     const winners = parseInt(staticData.topWinners || 5000);
@@ -309,7 +311,7 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 }
 
 // ==========================================
-// 4. VÒNG LẶP REALTIME
+// 4. VÒNG LẶP REALTIME & TÍCH HỢP "AI 3-9-60"
 // ==========================================
 async function loopRealtime() {
     try {
@@ -320,6 +322,7 @@ async function loopRealtime() {
 
         if (resTot.data?.success) {
             const now = new Date();
+            const currentTs = now.getTime();
             const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
 
             const limitMap = {};
@@ -333,67 +336,96 @@ async function loopRealtime() {
 
             resTot.data.data.forEach(t => {
                 const id = t.alphaId;
-                if (!id) return;
+                if (!id || !ACTIVE_CONFIG[id]) return; // Chỉ tính toán cho các token đang ACTIVE
                 
                 const rollVolTot = parseFloat(t.volume24h || 0);
                 const rollVolLim = limitMap[id] || 0;
+                const currentPrice = parseFloat(t.price || 0);
+                const currentTx = limitTxMap[id] || 0;
 
                 const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
                 const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
 
                 let dailyTot = Math.max(0, rollVolTot - tailTot);
                 let dailyLim = Math.max(0, rollVolLim - tailLim);
-                if (dailyTot < dailyLim) dailyTot = dailyLim; // Tuyệt đối Total ko nhỏ hơn Limit
+                if (dailyTot < dailyLim) dailyTot = dailyLim; 
+
+                // ====================================================
+                // 🧠 BỘ NÃO AI: THỰC THI KHẨU QUYẾT 3 - 9 - 60
+                // ====================================================
+                let history = TOKEN_METRICS_HISTORY[id] || [];
+                
+                let buyVol3s = 0, sellVol3s = 0, tickVol3s = 0, tickTx3s = 0;
+
+                if (history.length > 0) {
+                    const lastData = history[history.length - 1];
+                    // Nếu không bị dính reset 00:00 (Volume bị sụt)
+                    if (dailyTot >= lastData.v) {
+                        tickVol3s = dailyTot - lastData.v;
+                        tickTx3s = currentTx - lastData.tx;
+                        
+                        // Nội suy Mua/Bán dựa trên hướng giá 3s
+                        if (currentPrice >= lastData.p) buyVol3s = tickVol3s;
+                        else sellVol3s = tickVol3s;
+                    } else {
+                        history = []; // Bị reset volume qua ngày mới -> Xóa mảng
+                    }
+                }
+
+                // Nhồi dữ liệu giây hiện tại vào RAM
+                history.push({ ts: currentTs, p: currentPrice, v: dailyTot, tx: currentTx, buyV: buyVol3s, sellV: sellVol3s, tickTx: tickTx3s });
+                
+                // Cắt tỉa mảng, chỉ giữ lại dữ liệu 60 giây (60000ms) gần nhất
+                history = history.filter(h => currentTs - h.ts <= 60000);
+                TOKEN_METRICS_HISTORY[id] = history;
+
+                let spread9s = 0, velocity9s = 0, netFlow60s = 0, speed60s = 0, ticket3s = 0;
+
+                if (history.length > 1) {
+                    // --- KHUNG 60 GIÂY (Toàn cảnh xu hướng) ---
+                    let totalBuy60s = 0, totalSell60s = 0;
+                    history.forEach(h => { totalBuy60s += h.buyV; totalSell60s += h.sellV; });
+                    netFlow60s = totalBuy60s - totalSell60s; // Dòng tiền thuần
+                    
+                    const oldest60s = history[0];
+                    const newest = history[history.length - 1];
+                    const deltaTs60s = (newest.ts - oldest60s.ts) / 1000;
+                    if (deltaTs60s > 0) speed60s = (newest.v - oldest60s.v) / deltaTs60s; // Tốc độ USD/giây
+
+                    // --- KHUNG 3 GIÂY (Bắt Cá Mập) ---
+                    if (tickTx3s > 0) ticket3s = tickVol3s / tickTx3s; // Kích thước USD/Lệnh tức thời
+
+                    // --- KHUNG 9 GIÂY (Cò súng vi mô: Trượt giá & Đảo chiều) ---
+                    const history9s = history.filter(h => currentTs - h.ts <= 9000);
+                    if (history9s.length > 0) {
+                        const oldest9s = history9s[0];
+                        // 1. Gia tốc giá (Velocity 9s)
+                        if (oldest9s.p > 0) velocity9s = ((newest.p - oldest9s.p) / oldest9s.p) * 100;
+                        
+                        // 2. Độ giật (Spread 9s)
+                        let maxP = -1, minP = Infinity;
+                        history9s.forEach(h => { if(h.p > maxP) maxP = h.p; if(h.p < minP) minP = h.p; });
+                        if (minP > 0 && maxP !== -1 && minP !== Infinity) spread9s = ((maxP - minP) / minP) * 100;
+                    }
+                }
+                // ====================================================
 
                 GLOBAL_MARKET[id] = {
-                    p: parseFloat(t.price || 0),
+                    p: currentPrice,
                     c: parseFloat(t.percentChange24h || t.priceChangePercent || 0), 
                     r24: rollVolTot,                                               
                     l: parseFloat(t.liquidity || 0),                             
                     mc: parseFloat(t.marketCap || 0),                              
                     h: parseInt(t.holders || t.holderCount || 0),                  
                     v: { dt: dailyTot, dl: dailyLim }, 
-                    tx: limitTxMap[id] || 0, 
-                    analysis: GLOBAL_MARKET[id]?.analysis 
+                    tx: currentTx, 
+                    // Nạp bộ thông số thực chiến lên Frontend
+                    analysis: { spread9s, velocity9s, netFlow60s, speed60s, ticket3s } 
                 };
             });
         }
     } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
     setTimeout(loopRealtime, 3000); 
-}
-
-// ==========================================
-// 5. VÒNG LẶP ANALYZER 
-// ==========================================
-async function loopAnalyzer() {
-    const activeIds = Object.keys(ACTIVE_CONFIG);
-    for (let i = 0; i < activeIds.length; i += 5) {
-        const batch = activeIds.slice(i, i + 5);
-        await Promise.all(batch.map(async (id) => {
-            try {
-                const conf = ACTIVE_CONFIG[id];
-                if(!conf || !conf.contract) return;
-
-                const res = await axios.get(API_ENDPOINTS.KLINES_1M_ANALYZER(conf.chainId || 56, conf.contract), { headers: FAKE_HEADERS, timeout: 3000 });
-                if (res.data?.success && res.data.data?.klineInfos?.length > 0) {
-                    const klines = res.data.data.klineInfos;
-                    const last = klines[klines.length - 1];
-                    const high = parseFloat(last[2]), low = parseFloat(last[3]);
-                    const spread = low > 0 ? ((high - low) / low) * 100 : 0;
-
-                    let sumVol = 0;
-                    klines.slice(-5).forEach(k => { sumVol += parseFloat(k[5] || 0); });
-                    const speed = sumVol / 300; 
-                    const ticket = GLOBAL_MARKET[id]?.tx > 0 ? sumVol / (GLOBAL_MARKET[id]?.tx * 0.05) : 0;
-
-                    if (!GLOBAL_MARKET[id]) GLOBAL_MARKET[id] = {};
-                    GLOBAL_MARKET[id].analysis = { spread, speed, ticket };
-                }
-            } catch (e) {}
-        }));
-        await sleep(200);
-    }
-    setTimeout(loopAnalyzer, 10000); 
 }
 
 // ==========================================
@@ -445,7 +477,7 @@ app.get('/api/competition-data', (req, res) => {
             base_total_vol: base.base_total_vol || 0,
             base_limit_vol: base.base_limit_vol || 0,
             real_vol_history: historyArr,
-            market_analysis: real.analysis || { label: "WAIT..." },
+            market_analysis: real.analysis || { label: "WAIT..." }, // Trả thẳng 5 thông số xịn về Web
             ai_prediction: aiResult
         };
 
@@ -478,8 +510,7 @@ app.listen(PORT, async () => {
     
     await runYesterdaySnapshot();
     
-    loopRealtime();
-    loopAnalyzer();
+    loopRealtime(); // Chạy duy nhất 1 nhịp đập 3s
     
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
     setInterval(syncBaseData, 30 * 60 * 1000);    
