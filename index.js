@@ -18,8 +18,6 @@ const FAKE_HEADERS = {
 const API_ENDPOINTS = {
     BULK_TOTAL: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=aggregate",
     BULK_LIMIT: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=limit",
-    KLINES_TOTAL: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=5m&limit=1000&tokenAddress=${contract}&dataType=aggregate`,
-    KLINES_LIMIT: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=5m&limit=1000&tokenAddress=${contract}&dataType=limit`,
     KLINES_1H_OFFSET: (chainId, contract) => `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1h&limit=100&tokenAddress=${contract}&dataType=aggregate`
 };
 
@@ -133,63 +131,33 @@ async function checkStartOffsets() {
 }
 
 // ==========================================
-// 1.5. THUẬT TOÁN "SNAPSHOT CẮT ĐUÔI" 
+// 1.5. ĐỒNG BỘ "CÁI ĐUÔI" TỪ PYTHON BOT (QUA R2)
 // ==========================================
-function buildSuffixSum(dataArray) {
-    const arr = new Array(1440).fill(0);
-    if (!dataArray || dataArray.length === 0) return arr;
-
-    const minuteMap = new Array(1440).fill(0);
-    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-
-    dataArray.forEach(k => {
-        const candleTs = parseInt(k[0]);
-        const dateObj = new Date(candleTs);
-        if (dateObj.toISOString().split('T')[0] === yesterdayStr) {
-            const startMin = dateObj.getUTCHours() * 60 + dateObj.getUTCMinutes();
-            const volPerMin = Number(k[5] || 0) / 5; 
-            for (let i = 0; i < 5; i++) {
-                if (startMin + i < 1440) minuteMap[startMin + i] += volPerMin;
-            }
-        }
-    });
-
-    let runningSum = 0;
-    for (let i = 1439; i >= 0; i--) {
-        runningSum += minuteMap[i];
-        arr[i] = runningSum;
+async function syncTailsFromR2() {
+    try {
+        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "tails_cache.json" });
+        const resp = await s3Client.send(cmd);
+        const str = await resp.Body.transformToString();
+        const data = JSON.parse(str);
+        
+        if (data.total) SNAPSHOT_TAIL_TOTAL = data.total;
+        if (data.limit) SNAPSHOT_TAIL_LIMIT = data.limit;
+        
+        console.log(`🦊 Đã tải Tails Cache từ R2: ${Object.keys(SNAPSHOT_TAIL_TOTAL).length} token sẵn sàng Realtime.`);
+    } catch (e) {
+        console.error("⚠️ Chưa tải được Tails Cache (Chờ Bot Python chạy).");
     }
-    return arr;
 }
 
-async function runYesterdaySnapshot() {
-    console.log("📸 Bắt đầu chụp Snapshot cắt đuôi...");
-    for (let symbol of ACTIVE_TOKEN_LIST) {
-        try {
-            const conf = ACTIVE_CONFIG[symbol];
-            if (!conf || !conf.contract) continue;
-
-            const [resTot, resLim] = await Promise.all([
-                axios.get(API_ENDPOINTS.KLINES_TOTAL(conf.chainId || 56, conf.contract), { headers: FAKE_HEADERS }).catch(()=>({data:{}})),
-                axios.get(API_ENDPOINTS.KLINES_LIMIT(conf.chainId || 56, conf.contract), { headers: FAKE_HEADERS }).catch(()=>({data:{}}))
-            ]);
-
-            SNAPSHOT_TAIL_TOTAL[symbol] = buildSuffixSum(resTot.data?.data?.klineInfos || []);
-            SNAPSHOT_TAIL_LIMIT[symbol] = buildSuffixSum(resLim.data?.data?.klineInfos || []);
-            await sleep(150); 
-        } catch (e) {}
-    }
-    console.log("✅ Snapshot cắt đuôi hoàn tất!");
-}
-
+// Tự động reset Đuôi về 0 khi qua ngày mới (00:00 UTC)
 let lastDay = new Date().getUTCDate();
 setInterval(() => {
     const nowDay = new Date().getUTCDate();
     if (nowDay !== lastDay) {
         lastDay = nowDay;
-        SNAPSHOT_TAIL_TOTAL = {};
+        SNAPSHOT_TAIL_TOTAL = {}; 
         SNAPSHOT_TAIL_LIMIT = {};
-        runYesterdaySnapshot();
+        console.log("🕛 Đã qua ngày mới! Xóa Đuôi cũ, chờ Python cập nhật Đuôi mới...");
     }
 }, 60000);
 
@@ -344,7 +312,6 @@ async function loopRealtime() {
                 const currentTx = limitTxMap[id] || 0;
 
                 // --- 1. TÍNH DAILY VOL BẰNG CÁCH CẮT ĐUÔI ---
-                // Chỉ những con trong giải đấu mới có cái Đuôi này
                 const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
                 const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
 
@@ -363,6 +330,7 @@ async function loopRealtime() {
                     mc: parseFloat(t.marketCap || 0),
                     h: parseInt(t.holders || t.holderCount || 0),
                     tx: currentTx,
+                    ss: (t.stockState || t.rwaInfo) ? 1 : 0, // Cờ chứng khoán lọc khỏi Thẻ Bài
                     v: { dt: dailyTot, dl: dailyLim } // Bơm Daily Vol xịn vào đây
                 };
 
@@ -508,11 +476,12 @@ app.listen(PORT, async () => {
     await syncBaseData();
     await checkStartOffsets();
     
-    await runYesterdaySnapshot();
+    await syncTailsFromR2(); // Khởi động kéo file Đuôi từ R2 về RAM
     
     loopRealtime(); // Chạy duy nhất 1 nhịp đập 3s
     
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
     setInterval(syncBaseData, 30 * 60 * 1000);   
     setInterval(checkStartOffsets, 15 * 60 * 1000); 
+    setInterval(syncTailsFromR2, 10 * 60 * 1000); // Kiểm tra R2 mỗi 10 phút để cập nhật Đuôi
 });
