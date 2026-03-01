@@ -541,10 +541,65 @@ app.get('/api/proxy', async (req, res) => {
     }
 });
 
+// ==========================================
+// 🕵️ HÀM TÌM LỖI CHÍNH XÁC (CHỈ CHẠY 1 LẦN)
+// ==========================================
+async function testBinanceAPI() {
+    console.log("\n=======================================================");
+    console.log("🕵️ BẮT ĐẦU SCRIPT TÌM LỖI CHÍNH XÁC (ALPHA_488)");
+    console.log("=======================================================");
+    
+    const chainId = 56;
+    const contract = "0x011ebe7d75e2c9d1e0bd0be0bef5c36f0a90075f"; // Token STABLE
+    
+    // Tạo mốc thời gian Ca 1 (Sáng hôm qua) y hệt như logic đang chạy
+    const yesterday = new Date(Date.now() - 86400000);
+    const yStart = new Date(yesterday).setUTCHours(0,0,0,0);
+    const yMid1 = new Date(yesterday).setUTCHours(11,59,59,999);
+
+    // 1. URL đang bị lỗi (CÓ truyền startTime và endTime)
+    const urlWithTime = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&startTime=${yStart}&endTime=${yMid1}&limit=1000&tokenAddress=${contract}&dataType=aggregate`;
+    
+    // 2. URL cũ (KHÔNG truyền startTime, chỉ truyền limit=1500)
+    const urlWithoutTime = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1m&limit=1500&tokenAddress=${contract}&dataType=aggregate`;
+
+    try {
+        console.log("\n▶️ TEST 1: Đang gọi URL CÓ chứa startTime & endTime...");
+        console.log("Link:", urlWithTime);
+        const res1 = await axios.get(urlWithTime, { headers: FAKE_HEADERS });
+        const data1 = res1.data;
+        const klines1 = data1?.data?.klineInfos;
+        console.log(`-> Binance trả về Success: ${data1.success}, Code: ${data1.code}`);
+        console.log(`-> Số lượng nến thu được: ${klines1 ? klines1.length : 'UNDEFINED'}`);
+        if (!klines1 || klines1.length === 0) {
+            console.log("-> 🔴 CHI TIẾT RAW DATA LỖI:", JSON.stringify(data1));
+        }
+
+        console.log("\n▶️ TEST 2: Đang gọi URL KHÔNG có startTime (chỉ có limit=1500)...");
+        console.log("Link:", urlWithoutTime);
+        const res2 = await axios.get(urlWithoutTime, { headers: FAKE_HEADERS });
+        const data2 = res2.data;
+        const klines2 = data2?.data?.klineInfos;
+        console.log(`-> Binance trả về Success: ${data2.success}, Code: ${data2.code}`);
+        console.log(`-> Số lượng nến thu được: ${klines2 ? klines2.length : 'UNDEFINED'}`);
+        if (klines2 && klines2.length > 0) {
+            const firstTime = new Date(Number(klines2[0][0])).toISOString();
+            const lastTime = new Date(Number(klines2[klines2.length - 1][0])).toISOString();
+            console.log(`-> 🟢 Nến xa nhất quét được: ${firstTime}`);
+            console.log(`-> 🟢 Nến gần nhất quét được: ${lastTime}`);
+        }
+
+    } catch (e) {
+        console.log("❌ Axios Request Failed:", e.message);
+        if (e.response) console.log("Chi tiết từ Binance:", e.response.data);
+    }
+    console.log("=======================================================\n");
+}
+
 // START SERVER
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
-    
+    await testBinanceAPI();
     await syncHistoryFromR2();
     await syncActiveConfig();
     await syncBaseData();
