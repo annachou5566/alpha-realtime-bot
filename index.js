@@ -373,18 +373,7 @@ async function loopRealtime() {
             }
 
             resTot.data.data.forEach(t => {
-                // --- BẮT ĐẦU DEBUG REALTIME ---
-                if (t.alphaId === "ALPHA_488") { // Thay bằng mã ALPHA của token Stable
-                    console.log(`\n=== DEBUG REALTIME ${t.alphaId} ===`);
-                    console.log("Dữ liệu gốc từ BULK_TOTAL:", JSON.stringify(t));
-                    console.log("Biến rollVolTot (t.volume24h):", t.volume24h);
-                    console.log("Thử xem biến amount24h có không:", t.amount24h, t.quoteVolume24h);
-                    
-                    const now = new Date();
-                    const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
-                    console.log("Cái đuôi tailTot đang là:", SNAPSHOT_TAIL_TOTAL[t.alphaId]?.[currentMinute]);
-                }
-                // --- KẾT THÚC DEBUG ---
+                
                 const id = t.alphaId;
                 if (!id) return;
                 
