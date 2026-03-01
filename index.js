@@ -351,61 +351,63 @@ async function loopRealtime() {
                 if (dailyTot < dailyLim) dailyTot = dailyLim; 
 
                 // ====================================================
-                // 🧠 BỘ NÃO AI: THỰC THI KHẨU QUYẾT 3 - 9 - 60
+                // 🧠 BỘ NÃO AI: THỰC THI KHẨU QUYẾT MỚI (BẮT RÂU NẾN)
                 // ====================================================
                 let history = TOKEN_METRICS_HISTORY[id] || [];
-                
                 let buyVol3s = 0, sellVol3s = 0, tickVol3s = 0, tickTx3s = 0;
 
                 if (history.length > 0) {
                     const lastData = history[history.length - 1];
-                    // Nếu không bị dính reset 00:00 (Volume bị sụt)
                     if (dailyTot >= lastData.v) {
                         tickVol3s = dailyTot - lastData.v;
                         tickTx3s = currentTx - lastData.tx;
-                        
-                        // Nội suy Mua/Bán dựa trên hướng giá 3s
                         if (currentPrice >= lastData.p) buyVol3s = tickVol3s;
                         else sellVol3s = tickVol3s;
                     } else {
-                        history = []; // Bị reset volume qua ngày mới -> Xóa mảng
+                        history = []; // Reset qua ngày mới
                     }
                 }
 
-                // Nhồi dữ liệu giây hiện tại vào RAM
                 history.push({ ts: currentTs, p: currentPrice, v: dailyTot, tx: currentTx, buyV: buyVol3s, sellV: sellVol3s, tickTx: tickTx3s });
-                
-                // Cắt tỉa mảng, chỉ giữ lại dữ liệu 60 giây (60000ms) gần nhất
-                history = history.filter(h => currentTs - h.ts <= 60000);
+                history = history.filter(h => currentTs - h.ts <= 60000); // Lưu chuẩn 60s
                 TOKEN_METRICS_HISTORY[id] = history;
 
-                let spread9s = 0, velocity9s = 0, netFlow60s = 0, speed60s = 0, ticket3s = 0;
+                let spread15s = 0, trend60s = 0, dropFromPeak = 0, netFlow60s = 0, speed60s = 0, ticket3s = 0;
 
                 if (history.length > 1) {
-                    // --- KHUNG 60 GIÂY (Toàn cảnh xu hướng) ---
-                    let totalBuy60s = 0, totalSell60s = 0;
-                    history.forEach(h => { totalBuy60s += h.buyV; totalSell60s += h.sellV; });
-                    netFlow60s = totalBuy60s - totalSell60s; // Dòng tiền thuần
-                    
                     const oldest60s = history[0];
                     const newest = history[history.length - 1];
+
+                    // --- 1. KHUNG 60 GIÂY (Toàn cảnh & Dòng tiền) ---
+                    let totalBuy60s = 0, totalSell60s = 0;
+                    let maxP60 = -1, minP60 = Infinity;
+
+                    history.forEach(h => { 
+                        totalBuy60s += h.buyV; 
+                        totalSell60s += h.sellV; 
+                        if(h.p > maxP60) maxP60 = h.p; 
+                        if(h.p < minP60) minP60 = h.p;
+                    });
+
+                    netFlow60s = totalBuy60s - totalSell60s; 
                     const deltaTs60s = (newest.ts - oldest60s.ts) / 1000;
-                    if (deltaTs60s > 0) speed60s = (newest.v - oldest60s.v) / deltaTs60s; // Tốc độ USD/giây
+                    if (deltaTs60s > 0) speed60s = (newest.v - oldest60s.v) / deltaTs60s; 
 
-                    // --- KHUNG 3 GIÂY (Bắt Cá Mập) ---
-                    if (tickTx3s > 0) ticket3s = tickVol3s / tickTx3s; // Kích thước USD/Lệnh tức thời
+                    // CHỈ BÁO TREND CHUẨN NẾN 1 PHÚT
+                    if (oldest60s.p > 0) trend60s = ((newest.p - oldest60s.p) / oldest60s.p) * 100;
+                    
+                    // CHỈ BÁO ĐẢO CHIỀU (Khoảng cách từ Giá hiện tại rơi khỏi Đỉnh 1 phút)
+                    if (maxP60 !== -1 && maxP60 > 0) dropFromPeak = ((newest.p - maxP60) / maxP60) * 100; // Ra số âm
 
-                    // --- KHUNG 9 GIÂY (Cò súng vi mô: Trượt giá & Đảo chiều) ---
-                    const history9s = history.filter(h => currentTs - h.ts <= 9000);
-                    if (history9s.length > 0) {
-                        const oldest9s = history9s[0];
-                        // 1. Gia tốc giá (Velocity 9s)
-                        if (oldest9s.p > 0) velocity9s = ((newest.p - oldest9s.p) / oldest9s.p) * 100;
-                        
-                        // 2. Độ giật (Spread 9s)
-                        let maxP = -1, minP = Infinity;
-                        history9s.forEach(h => { if(h.p > maxP) maxP = h.p; if(h.p < minP) minP = h.p; });
-                        if (minP > 0 && maxP !== -1 && minP !== Infinity) spread9s = ((maxP - minP) / minP) * 100;
+                    // --- 2. KHUNG 3 GIÂY (Whale Tracker) ---
+                    if (tickTx3s > 0) ticket3s = tickVol3s / tickTx3s;
+
+                    // --- 3. KHUNG 15 GIÂY (Spread thực chiến - Dùng 15s để loại bỏ nhiễu) ---
+                    const history15s = history.filter(h => currentTs - h.ts <= 15000);
+                    if (history15s.length > 0) {
+                        let maxP15 = -1, minP15 = Infinity;
+                        history15s.forEach(h => { if(h.p > maxP15) maxP15 = h.p; if(h.p < minP15) minP15 = h.p; });
+                        if (minP15 > 0 && maxP15 !== -1 && minP15 !== Infinity) spread15s = ((maxP15 - minP15) / minP15) * 100;
                     }
                 }
                 // ====================================================
@@ -419,8 +421,8 @@ async function loopRealtime() {
                     h: parseInt(t.holders || t.holderCount || 0),                  
                     v: { dt: dailyTot, dl: dailyLim }, 
                     tx: currentTx, 
-                    // Nạp bộ thông số thực chiến lên Frontend
-                    analysis: { spread9s, velocity9s, netFlow60s, speed60s, ticket3s } 
+                    // Nạp bộ thông số ĐÃ CHUẨN HÓA lên Frontend
+                    analysis: { spread: spread15s, trend: trend60s, drop: dropFromPeak, netFlow: netFlow60s, speed: speed60s, ticket: ticket3s } 
                 };
             });
         }
