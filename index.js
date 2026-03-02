@@ -45,7 +45,16 @@ let ACTIVE_TOKEN_LIST = [];
 
 // BỘ NHỚ LƯU VẾT AI CHO "KHẨU QUYẾT 3-9-60"
 let TOKEN_METRICS_HISTORY = {}; 
+let YESTERDAY_STATS = { daily: 0, rolling: 0 };
 
+async function syncYesterdayStats() {
+    try {
+        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "yesterday_stats.json" });
+        const resp = await s3Client.send(cmd);
+        const str = await resp.Body.transformToString();
+        YESTERDAY_STATS = JSON.parse(str);
+    } catch (e) { }
+}
 const HISTORY_FILE_KEY = "finalized_history.json";
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -143,7 +152,19 @@ async function syncTailsFromR2() {
         if (data.total) SNAPSHOT_TAIL_TOTAL = data.total;
         if (data.limit) SNAPSHOT_TAIL_LIMIT = data.limit;
         
-        console.log(`🦊 Đã tải Tails Cache từ R2: ${Object.keys(SNAPSHOT_TAIL_TOTAL).length} token sẵn sàng Realtime.`);
+        // MẸO LẤY VOLUME HÔM QUA TỪ CÁI ĐUÔI (Khỏi chờ 24h)
+        if (YESTERDAY_STATS.daily === 0) {
+            let calcDaily = 0;
+            Object.keys(SNAPSHOT_TAIL_TOTAL).forEach(id => {
+                calcDaily += (SNAPSHOT_TAIL_TOTAL[id][0] || 0); // Vị trí 0 là tổng Volume hôm qua
+            });
+            if (calcDaily > 0) {
+                YESTERDAY_STATS.daily = calcDaily;
+                YESTERDAY_STATS.rolling = calcDaily; // Mượn tạm để chia % cho Rolling
+            }
+        }
+        
+        console.log(`🦊 Đã tải Tails Cache từ R2: ${Object.keys(SNAPSHOT_TAIL_TOTAL).length} token.`);
     } catch (e) {
         console.error("⚠️ Chưa tải được Tails Cache (Chờ Bot Python chạy).");
     }
@@ -155,9 +176,26 @@ setInterval(() => {
     const nowDay = new Date().getUTCDate();
     if (nowDay !== lastDay) {
         lastDay = nowDay;
+
+        // TÍNH VOLUME CHỐT SỔ HÔM QUA (BỎ QUA CHỨNG KHOÁN)
+        let totalDaily = 0, totalRolling = 0;
+        Object.values(GLOBAL_MARKET).forEach(t => {
+            if (t && t.ss !== 1 && t.ss !== true && t.id !== '_STATS' && t.v) {
+                totalDaily += (t.v.dt || 0);
+                totalRolling += (t.r24 || 0);
+            }
+        });
+        YESTERDAY_STATS = { daily: totalDaily, rolling: totalRolling };
+
+        // LƯU LÊN R2
+        try {
+            const cmd = new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "yesterday_stats.json", Body: JSON.stringify(YESTERDAY_STATS), ContentType: "application/json" });
+            s3Client.send(cmd);
+        } catch(e) {}
+
         SNAPSHOT_TAIL_TOTAL = {}; 
         SNAPSHOT_TAIL_LIMIT = {};
-        console.log("🕛 Đã qua ngày mới! Xóa Đuôi cũ, chờ Python cập nhật Đuôi mới...");
+        console.log("🕛 Đã qua ngày mới! Chốt Volume hôm qua thành công...");
     }
 }, 60000);
 
@@ -392,6 +430,7 @@ async function loopRealtime() {
                 // Gắn chỉ báo AI cho riêng Token thi đấu
                 GLOBAL_MARKET[id].analysis = { spread: spread15s, trend: trend60s, drop: dropFromPeak, netFlow: netFlow60s, speed: speed60s, ticket: ticket3s }; 
             });
+            GLOBAL_MARKET['_STATS'] = { ...YESTERDAY_STATS };
         }
     } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
     setTimeout(loopRealtime, 3000); 
@@ -478,6 +517,7 @@ app.get('/api/proxy', async (req, res) => {
 // START SERVER
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
+    await syncYesterdayStats();
     await syncHistoryFromR2();
     await syncActiveConfig();
     await syncBaseData();
