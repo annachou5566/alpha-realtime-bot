@@ -43,16 +43,14 @@ let SNAPSHOT_TAIL_TOTAL = {};
 let SNAPSHOT_TAIL_LIMIT = {}; 
 let ACTIVE_TOKEN_LIST = [];  
 
-// BỘ NHỚ LƯU VẾT AI CHO "KHẨU QUYẾT 3-9-60"
 let TOKEN_METRICS_HISTORY = {}; 
-let YESTERDAY_STATS = { daily: 0, rolling: 0 };
-
-async function syncYesterdayStats() {
+let MARKET_VOL_HISTORY = []; 
+async function syncMarketHistory() {
     try {
-        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "yesterday_stats.json" });
+        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "market_vol_history.json" });
         const resp = await s3Client.send(cmd);
         const str = await resp.Body.transformToString();
-        YESTERDAY_STATS = JSON.parse(str);
+        MARKET_VOL_HISTORY = JSON.parse(str);
     } catch (e) { }
 }
 const HISTORY_FILE_KEY = "finalized_history.json";
@@ -152,25 +150,23 @@ async function syncTailsFromR2() {
         if (data.total) SNAPSHOT_TAIL_TOTAL = data.total;
         if (data.limit) SNAPSHOT_TAIL_LIMIT = data.limit;
         
-        // MẸO LẤY VOLUME HÔM QUA TỪ CÁI ĐUÔI (Khỏi chờ 24h)
-        if (YESTERDAY_STATS.daily === 0) {
+        // Mẹo lấy Volume hôm qua cho Biểu đồ
+        if (MARKET_VOL_HISTORY.length === 0) {
             let calcDaily = 0;
             Object.keys(SNAPSHOT_TAIL_TOTAL).forEach(id => {
-                calcDaily += (SNAPSHOT_TAIL_TOTAL[id][0] || 0); // Vị trí 0 là tổng Volume hôm qua
+                calcDaily += (SNAPSHOT_TAIL_TOTAL[id][0] || 0); 
             });
             if (calcDaily > 0) {
-                YESTERDAY_STATS.daily = calcDaily;
-                YESTERDAY_STATS.rolling = calcDaily; // Mượn tạm để chia % cho Rolling
+                let yStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+                MARKET_VOL_HISTORY.push({ date: yStr, daily: calcDaily, rolling: calcDaily });
             }
         }
-        
-        console.log(`🦊 Đã tải Tails Cache từ R2: ${Object.keys(SNAPSHOT_TAIL_TOTAL).length} token.`);
+        console.log(`🦊 Đã tải Tails Cache từ R2.`);
     } catch (e) {
-        console.error("⚠️ Chưa tải được Tails Cache (Chờ Bot Python chạy).");
+        console.error("⚠️ Chưa tải được Tails Cache.");
     }
 }
 
-// Tự động reset Đuôi về 0 khi qua ngày mới (00:00 UTC)
 let lastDay = new Date().getUTCDate();
 setInterval(() => {
     const nowDay = new Date().getUTCDate();
@@ -185,17 +181,22 @@ setInterval(() => {
                 totalRolling += (t.r24 || 0);
             }
         });
-        YESTERDAY_STATS = { daily: totalDaily, rolling: totalRolling };
 
+        // THÊM VÀO MẢNG LỊCH SỬ & GIỮ 14 NGÀY
+        let yStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+        MARKET_VOL_HISTORY = MARKET_VOL_HISTORY.filter(x => x.date !== yStr);
+        MARKET_VOL_HISTORY.push({ date: yStr, daily: totalDaily, rolling: totalRolling });
+        if (MARKET_VOL_HISTORY.length > 14) MARKET_VOL_HISTORY.shift(); 
+        
         // LƯU LÊN R2
         try {
-            const cmd = new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "yesterday_stats.json", Body: JSON.stringify(YESTERDAY_STATS), ContentType: "application/json" });
+            const cmd = new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "market_vol_history.json", Body: JSON.stringify(MARKET_VOL_HISTORY), ContentType: "application/json" });
             s3Client.send(cmd);
         } catch(e) {}
 
         SNAPSHOT_TAIL_TOTAL = {}; 
         SNAPSHOT_TAIL_LIMIT = {};
-        console.log("🕛 Đã qua ngày mới! Chốt Volume hôm qua thành công...");
+        console.log("🕛 Đã qua ngày mới! Chốt Biểu đồ Volume thành công...");
     }
 }, 60000);
 
@@ -429,9 +430,12 @@ async function loopRealtime() {
 
                 // Gắn chỉ báo AI cho riêng Token thi đấu
                 GLOBAL_MARKET[id].analysis = { spread: spread15s, trend: trend60s, drop: dropFromPeak, netFlow: netFlow60s, speed: speed60s, ticket: ticket3s }; 
-            });
-            GLOBAL_MARKET['_STATS'] = { ...YESTERDAY_STATS };
-        }
+            }); // <-- Kết thúc vòng lặp forEach
+
+            // KẸP MẢNG LỊCH SỬ 14 NGÀY VÀO CHUNG GÓI REALTIME
+            GLOBAL_MARKET['_STATS'] = MARKET_VOL_HISTORY;
+
+        } // <-- Đóng của if (resTot.data?.success)
     } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
     setTimeout(loopRealtime, 3000); 
 }
@@ -522,7 +526,7 @@ app.listen(PORT, async () => {
     await syncActiveConfig();
     await syncBaseData();
     await checkStartOffsets();
-    
+    await syncMarketHistory();
     await syncTailsFromR2(); // Khởi động kéo file Đuôi từ R2 về RAM
     
     loopRealtime(); // Chạy duy nhất 1 nhịp đập 3s
