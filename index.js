@@ -255,6 +255,7 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
         limit_accumulated_volume: finalData.limitAccumulated,
         limit_accumulated_tx: finalData.limitTx,
         tx_count: finalData.totalTx,
+        real_vol_history: finalData.historyArr,
         ai_prediction: {
             target: predictionResult.target,
             delta: predictionResult.delta,
@@ -450,7 +451,13 @@ app.get('/api/competition-data', (req, res) => {
         };
 
         if (aiResult.is_finalized) {
-            finalizeTournament(alphaId, { totalAccumulated, limitAccumulated, limitTx: limitTxAccumulated, totalTx: totalTxAccumulated }, aiResult);
+            finalizeTournament(alphaId, { 
+                totalAccumulated, 
+                limitAccumulated, 
+                limitTx: limitTxAccumulated, 
+                totalTx: totalTxAccumulated,
+                historyArr: historyArr 
+            }, aiResult);
         }
     });
 
