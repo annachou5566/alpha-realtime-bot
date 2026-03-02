@@ -521,13 +521,12 @@ app.get('/api/proxy', async (req, res) => {
 // START SERVER
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
-    await syncYesterdayStats();
     await syncHistoryFromR2();
     await syncActiveConfig();
     await syncBaseData();
     await checkStartOffsets();
     await syncMarketHistory();
-    await syncTailsFromR2(); // Khởi động kéo file Đuôi từ R2 về RAM
+    await syncTailsFromR2(); 
     
     loopRealtime(); // Chạy duy nhất 1 nhịp đập 3s
     
