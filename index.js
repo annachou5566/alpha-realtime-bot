@@ -590,11 +590,11 @@ app.get('/api/proxy', async (req, res) => {
 });
 
 // START SERVER
+// START SERVER
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
-    // TÌM ĐOẠN KHỞI ĐỘNG CỦA BẠN:
+    
     await syncHistoryFromR2();
-    await syncActiveHistory(); 
     await syncActiveConfig();
     await syncBaseData();
     await checkStartOffsets();
@@ -603,10 +603,10 @@ app.listen(PORT, async () => {
 
     await syncTailsFromR2();
     
-    loopRealtime(); // Chạy duy nhất 1 nhịp đập 3s
+    loopRealtime(); 
     
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
     setInterval(syncBaseData, 30 * 60 * 1000);   
     setInterval(checkStartOffsets, 15 * 60 * 1000); 
-    setInterval(syncTailsFromR2, 10 * 60 * 1000); // Kiểm tra R2 mỗi 10 phút để cập nhật Đuôi
+    setInterval(syncTailsFromR2, 10 * 60 * 1000); 
 });
