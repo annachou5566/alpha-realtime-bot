@@ -48,59 +48,75 @@ let MARKET_VOL_HISTORY = [];
 
 // HÀM LẤY 14 CÂY NẾN 1D TỪ API BAPI (WEB3/DEFI)
 async function fetch14DaysHistoryBapi() {
-    console.log("⏳ Đang cào 14 ngày lịch sử Volume từ Binance Web3...");
+    console.log("⏳ Đang lấy danh sách Token để cào lịch sử Volume...");
     let historyMap = {}; 
 
-    // Lọc lấy danh sách token hợp lệ (Cần có contract và chainId)
-    // Lưu ý: Tùy theo cách bạn lưu trong GLOBAL_MARKET, ta cần contractAddress và chainId
-    let tokensToFetch = Object.values(GLOBAL_MARKET).filter(t => 
-        t && t.ss !== 1 && t.ss !== true && t.id !== '_STATS' && t.contractAddress // Đảm bảo có address
-    );
+    try {
+        // 1. Tự gọi API để lấy danh sách Token gốc (Vì GLOBAL_MARKET không chứa contract)
+        const resTot = await axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 10000 });
+        
+        if (!resTot.data?.success || !resTot.data?.data) {
+            console.log("❌ Lấy danh sách token thất bại, không thể cào lịch sử.");
+            return;
+        }
 
-    if (tokensToFetch.length === 0) return;
+        // 2. Lọc lấy token hợp lệ (Loại bỏ chứng khoán RWA và token không có contract)
+        let tokensToFetch = resTot.data.data.filter(t => 
+            t.contractAddress && 
+            t.stockState !== 1 && 
+            t.stockState !== true && 
+            !t.rwaInfo
+        );
 
-    // Chạy vòng lặp gọi API (Chia nhỏ mỗi cụm 10 token để chống Rate Limit)
-    for (let i = 0; i < tokensToFetch.length; i += 10) {
-        const chunk = tokensToFetch.slice(i, i + 10);
-        await Promise.all(chunk.map(async (t) => {
-            try {
-                // Map chainName (BSC, ETH...) sang chainId (56, 1...) nếu cần
-                let chainId = t.chainId || (t.chain === 'BSC' ? 56 : (t.chain === 'ETH' ? 1 : 56));
-                let tokenAddr = t.contractAddress || t.contract;
+        if (tokensToFetch.length === 0) {
+            console.log("⚠️ Không tìm thấy token nào hợp lệ để cào.");
+            return;
+        }
 
-                const url = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1d&limit=14&tokenAddress=${tokenAddr}&dataType=aggregate`;
-                const res = await fetch(url);
-                const json = await res.json();
-                
-                if (json.success && json.data && json.data.klineInfos) {
-                    json.data.klineInfos.forEach(candle => {
-                        // candle[0]: Timestamp mở nến
-                        // candle[5]: Volume giao dịch
-                        let dateStr = new Date(parseInt(candle[0])).toISOString().split('T')[0];
-                        let vol = parseFloat(candle[5] || 0);
-                        
-                        if (!historyMap[dateStr]) historyMap[dateStr] = 0;
-                        historyMap[dateStr] += vol;
-                    });
+        console.log(`🎯 Tìm thấy ${tokensToFetch.length} tokens. Bắt đầu cào Klines 1D...`);
+
+        // 3. Chia cụm gọi API cào Klines
+        for (let i = 0; i < tokensToFetch.length; i += 10) {
+            const chunk = tokensToFetch.slice(i, i + 10);
+            await Promise.all(chunk.map(async (t) => {
+                try {
+                    let chainId = t.chainId || (t.chain === 'BSC' ? 56 : (t.chain === 'ETH' ? 1 : 56));
+                    let tokenAddr = t.contractAddress;
+
+                    const url = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1d&limit=14&tokenAddress=${tokenAddr}&dataType=aggregate`;
+                    const res = await axios.get(url, { headers: FAKE_HEADERS, timeout: 5000 });
+                    const json = res.data;
+                    
+                    if (json?.success && json?.data?.klineInfos) {
+                        json.data.klineInfos.forEach(candle => {
+                            let dateStr = new Date(parseInt(candle[0])).toISOString().split('T')[0];
+                            let vol = parseFloat(candle[5] || 0);
+                            
+                            if (!historyMap[dateStr]) historyMap[dateStr] = 0;
+                            historyMap[dateStr] += vol;
+                        });
+                    }
+                } catch (e) { 
+                    // Bỏ qua lỗi token lẻ tẻ
                 }
-            } catch (e) { 
-                // Lỗi mạng hoặc token bị lỗi -> bỏ qua
-            }
-        }));
-        await new Promise(resolve => setTimeout(resolve, 300)); // Nghỉ 0.3s
+            }));
+            await new Promise(resolve => setTimeout(resolve, 300)); // Nghỉ 0.3s
+        }
+
+        // 4. Đóng gói mảng 14 ngày
+        let tempArr = [];
+        Object.keys(historyMap).sort().forEach(date => {
+            tempArr.push({ date: date, daily: historyMap[date], rolling: historyMap[date] });
+        });
+
+        // 5. Lọc bỏ ngày hôm nay
+        let todayStr = new Date().toISOString().split('T')[0];
+        MARKET_VOL_HISTORY = tempArr.filter(x => x.date !== todayStr).slice(-13);
+
+        console.log(`✅ Cào BAPI xong! Nạp thành công ${MARKET_VOL_HISTORY.length} ngày lịch sử chuẩn 100%.`);
+    } catch (error) {
+        console.error("❌ Lỗi nghiêm trọng khi cào BAPI:", error.message);
     }
-
-    // Đóng gói mảng 14 ngày
-    let tempArr = [];
-    Object.keys(historyMap).sort().forEach(date => {
-        tempArr.push({ date: date, daily: historyMap[date], rolling: historyMap[date] });
-    });
-
-    // Lọc bỏ ngày "hôm nay" (vì hôm nay nến chưa đóng, Backend Realtime tự lo)
-    let todayStr = new Date().toISOString().split('T')[0];
-    MARKET_VOL_HISTORY = tempArr.filter(x => x.date !== todayStr).slice(-13);
-
-    console.log(`✅ Cào BAPI xong! Nạp thành công ${MARKET_VOL_HISTORY.length} ngày lịch sử cực chuẩn.`);
 }
 
 async function syncMarketHistory() {
