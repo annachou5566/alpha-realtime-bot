@@ -379,16 +379,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
     
     deltaVal = lastMinTarget > 0 ? (finalTarget - lastMinTarget) : finalTarget;
 
-    // IN RA LOG ĐỂ BẠN THEO DÕI SỰ LÌ ĐÒN CỦA NÓ
-    console.log(`\n=== DEBUG AI: ${alphaId} ===`);
-    console.log(`1. Limit Hiện tại: $${currentVol.toLocaleString()}`);
-    console.log(`2. Tốc độ Limit: $${(velocity || 0).toFixed(2)} / giây`); // In tốc độ đã quy đổi Limit
-    console.log(`3. Thêm phần dự phóng: $${projectedVol.toLocaleString()}`);
-    console.log(`4. Min Target Thô (Đang giật): ${Math.round(rawTarget)}`);
-    console.log(`=> KẾT QUẢ FINAL (Đã làm mượt 1H): ${Math.round(finalTarget)}`);
-    console.log(`===============================\n`);
-
-    return {
+        return {
         target: Math.round(finalTarget),
         delta: Math.round(deltaVal),
         rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)}) ${usingLimit ? '[LIMIT]' : ''}`,
