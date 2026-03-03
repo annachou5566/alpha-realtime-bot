@@ -272,13 +272,20 @@ setInterval(() => {
 }, 60000);
 
 // ==========================================
-// 2. LOGIC TÍNH TOÁN AI PREDICTION 
+// 2. LOGIC TÍNH TOÁN AI PREDICTION (CHUẨN LIMIT VOL NHƯ CŨ)
 // ==========================================
 function calculateAiPrediction(staticData, accumulatedData) {
-    const currentVol = accumulatedData.totalAccumulated;
-    const limitVol = accumulatedData.limitAccumulated;
-    const usingLimit = (limitVol > 0);
+    // A. LẤY VOLUME TÍCH LŨY (CHỈ LẤY LIMIT LÀM GỐC)
+    let currentVol = accumulatedData.limitAccumulated || 0;
+    let usingLimit = true;
 
+    // Dự phòng hiếm hoi: Nếu token chưa hề có Limit Vol thì mới mượn tạm Total Vol
+    if (currentVol === 0 && accumulatedData.totalAccumulated > 0) {
+        currentVol = accumulatedData.totalAccumulated;
+        usingLimit = false; 
+    }
+
+    // B. DỰ PHÓNG VOLUME (TIME BONUS)
     let projectedVol = currentVol;
     let isFinalized = false;
     const now = new Date();
@@ -287,35 +294,41 @@ function calculateAiPrediction(staticData, accumulatedData) {
         let endTimeStr = staticData.endTime && staticData.endTime.includes(':') ? staticData.endTime : "13:00";
         if (endTimeStr.length === 5) endTimeStr += ":00";
         const endDate = new Date(`${staticData.end}T${endTimeStr}Z`);
-        const freezeDate = new Date(endDate.getTime() - 1 * 60 * 1000); 
+        const freezeDate = new Date(endDate.getTime() - 1 * 60 * 1000); // Khóa trước 1 phút
 
-        if (now >= freezeDate) isFinalized = true;
-
-        if (now < endDate && !isFinalized) {
+        if (now >= freezeDate) {
+            isFinalized = true;
+        } else {
             const diffSeconds = (endDate.getTime() - now.getTime()) / 1000;
             let velocity = 0;
+            
+            // Trích xuất Tốc độ của riêng lệnh Limit (Bằng cách nhân Tỷ lệ Limit/Total)
             if (accumulatedData.analysis && accumulatedData.analysis.speed60s) {
-                velocity = accumulatedData.analysis.speed60s;
-                if (usingLimit && currentVol > 0 && staticData.total_accumulated_volume > 0) {
-                     velocity = velocity * (currentVol / staticData.total_accumulated_volume);
+                if (usingLimit && accumulatedData.totalAccumulated > 0) {
+                     const ratio = currentVol / accumulatedData.totalAccumulated;
+                     velocity = accumulatedData.analysis.speed60s * ratio;
+                } else {
+                    velocity = accumulatedData.analysis.speed60s;
                 }
             }
+            
             if (velocity > 0) projectedVol += (velocity * diffSeconds);
-        } else {
-            isFinalized = true;
         }
     }
 
+    // C. TÍNH VOLUME HIỆU DỤNG (ÁP DỤNG LUẬT x4)
     let effectiveVol = projectedVol;
     const ruleType = staticData.ruleType || "trade_all";
     if (ruleType === 'buy_only') effectiveVol = projectedVol / 2;
     if (ruleType === 'trade_x4') effectiveVol = projectedVol * 4;
 
+    // D. TÍNH TICKET SIZE (Chỉ dùng để Debug)
     let ticketSize = 0;
     if (usingLimit && accumulatedData.limitTx > 0) ticketSize = currentVol / accumulatedData.limitTx;
     else if (accumulatedData.totalTx > 0) ticketSize = currentVol / accumulatedData.totalTx;
     else if (accumulatedData.analysis && accumulatedData.analysis.ticket3s) ticketSize = accumulatedData.analysis.ticket3s;
 
+    // E. HỆ SỐ K VÀ ADMIN FACTOR
     const k = 1.03;
     const winners = parseInt(staticData.topWinners || 5000);
     let finalK = k;
@@ -328,7 +341,9 @@ function calculateAiPrediction(staticData, accumulatedData) {
         }
     }
 
+    // F. CHIA WINNERS VÀ TÍNH TARGET DELTA
     const finalTarget = (effectiveVol * finalK) / winners;
+    
     let deltaVal = 0;
     const targets = staticData.history || [];
     let lastMinTarget = 0;
@@ -343,7 +358,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
     return {
         target: Math.round(finalTarget),
         delta: Math.round(deltaVal),
-        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)})`,
+        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)}) ${usingLimit ? '[LIMIT DATA]' : ''}`,
         R: finalK,
         status_label: isFinalized ? "FINALIZED" : "LIVE PREDICTION",
         debug_info: `Vol:${(effectiveVol/1e9).toFixed(2)}B Ticket:$${Math.round(ticketSize)}`,
