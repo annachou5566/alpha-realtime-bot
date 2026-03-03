@@ -540,6 +540,56 @@ async function loopRealtime() {
 
                 // Gắn chỉ báo AI cho riêng Token thi đấu
                 GLOBAL_MARKET[id].analysis = { spread: spread15s, trend: trend60s, drop: dropFromPeak, netFlow: netFlow60s, speed: speed60s, ticket: ticket3s }; 
+
+                // ====================================================
+                // KHU VỰC 3: KÍCH HOẠT BỘ NÃO AI TRỰC TIẾP TRONG REALTIME
+                // ====================================================
+                const config = ACTIVE_CONFIG[id];
+                const base = BASE_HISTORY_DATA[id] || {};
+                const nowStr = now.toISOString().split('T')[0];
+
+                const offset = parseFloat(START_OFFSET_CACHE[id] || 0);
+                let effectiveTodayVol = parseFloat(dailyTot || 0);
+                if (config.start === nowStr) effectiveTodayVol = Math.max(0, effectiveTodayVol - offset);
+
+                const totalAccumulated = parseFloat(base.base_total_vol || 0) + effectiveTodayVol;
+                const limitAccumulated = parseFloat(base.base_limit_vol || 0) + parseFloat(dailyLim || 0);
+
+                const realTx = parseFloat(currentTx || 0);
+                const limitTxAccumulated = parseFloat(base.base_limit_tx || 0) + realTx; 
+                const totalTxAccumulated = parseFloat(base.base_total_tx || 0) + realTx;
+
+                // TỰ TÍNH AI PREDICTION 3 GIÂY 1 LẦN NGAY TẠI ĐÂY
+                const aiResult = calculateAiPrediction(config, {
+                    totalAccumulated, 
+                    limitAccumulated, 
+                    limitTx: limitTxAccumulated, 
+                    totalTx: totalTxAccumulated, 
+                    analysis: GLOBAL_MARKET[id].analysis
+                });
+
+                // Lưu kết quả siêu mượt vào RAM để Web xuống lấy
+                GLOBAL_MARKET[id].ai_prediction = aiResult;
+                GLOBAL_MARKET[id].effectiveTodayVol = effectiveTodayVol;
+                GLOBAL_MARKET[id].limitAccumulated = limitAccumulated;
+                GLOBAL_MARKET[id].totalAccumulated = totalAccumulated;
+
+                // NẾU HẾT GIỜ -> TỰ ĐỘNG CHỐT SỔ LUÔN, KHÔNG CẦN AI VÀO WEB
+                if (aiResult.is_finalized) {
+                    const historyArr = base.history_total ? [...base.history_total] : [];
+                    const existingToday = historyArr.find(h => h.date === nowStr);
+                    if (existingToday) existingToday.vol = effectiveTodayVol;
+                    else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
+
+                    finalizeTournament(id, { 
+                        totalAccumulated, 
+                        limitAccumulated, 
+                        limitTx: limitTxAccumulated, 
+                        totalTx: totalTxAccumulated,
+                        historyArr: historyArr 
+                    }, aiResult);
+                }
+
             }); // <-- Kết thúc vòng lặp forEach
 
             // KẸP MẢNG LỊCH SỬ 14 NGÀY VÀO CHUNG GÓI REALTIME
@@ -567,25 +617,18 @@ app.get('/api/competition-data', (req, res) => {
         const base = BASE_HISTORY_DATA[alphaId] || {};
         const real = GLOBAL_MARKET[alphaId] || {};
         
-        const offset = parseFloat(START_OFFSET_CACHE[alphaId] || 0);
-        let effectiveTodayVol = parseFloat(real.v?.dt || 0);
-        if (config.start === nowStr) effectiveTodayVol = Math.max(0, effectiveTodayVol - offset);
-
-        const totalAccumulated = parseFloat(base.base_total_vol || 0) + effectiveTodayVol;
-        const limitAccumulated = parseFloat(base.base_limit_vol || 0) + parseFloat(real.v?.dl || 0);  
+        // Lấy dữ liệu đã được Realtime tính toán sẵn trong RAM (Cực kỳ nhẹ server)
+        const effectiveTodayVol = real.effectiveTodayVol || 0;
+        const totalAccumulated = real.totalAccumulated || parseFloat(base.base_total_vol || 0);
+        const limitAccumulated = real.limitAccumulated || parseFloat(base.base_limit_vol || 0);  
         
         const historyArr = base.history_total ? [...base.history_total] : [];
         const existingToday = historyArr.find(h => h.date === nowStr);
         if (existingToday) existingToday.vol = effectiveTodayVol;
         else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
 
-        const realTx = parseFloat(real.tx || 0);
-        const limitTxAccumulated = parseFloat(base.base_limit_tx || 0) + realTx; 
-        const totalTxAccumulated = parseFloat(base.base_total_tx || 0) + realTx;
-
-        const aiResult = calculateAiPrediction(config, {
-            totalAccumulated, limitAccumulated, limitTx: limitTxAccumulated, totalTx: totalTxAccumulated, analysis: real.analysis || {}
-        });
+        // Nhấc luôn cục AI siêu mượt từ RAM ra gửi cho Web (Hoặc trả mảng rỗng nếu Server vừa restart)
+        const aiResult = real.ai_prediction || { label: "WAIT...", target: 0, delta: 0, is_finalized: false };
 
         responseData[alphaId] = {
             ...config,
@@ -599,19 +642,9 @@ app.get('/api/competition-data', (req, res) => {
             base_total_vol: base.base_total_vol || 0,
             base_limit_vol: base.base_limit_vol || 0,
             real_vol_history: historyArr,
-            market_analysis: real.analysis || { label: "WAIT..." }, // Trả thẳng 5 thông số xịn về Web
+            market_analysis: real.analysis || { label: "WAIT..." },
             ai_prediction: aiResult
         };
-
-        if (aiResult.is_finalized) {
-            finalizeTournament(alphaId, { 
-                totalAccumulated, 
-                limitAccumulated, 
-                limitTx: limitTxAccumulated, 
-                totalTx: totalTxAccumulated,
-                historyArr: historyArr 
-            }, aiResult);
-        }
     });
 
     res.json(responseData);
