@@ -45,7 +45,7 @@ let ACTIVE_TOKEN_LIST = [];
 
 let TOKEN_METRICS_HISTORY = {}; 
 let MARKET_VOL_HISTORY = [];
-
+let PREDICTION_SMOOTHING_CACHE = {};
 // HÀM LẤY 14 CÂY NẾN 1D TỪ API BAPI (WEB3/DEFI)
 async function fetch14DaysHistoryBapi() {
     console.log("⏳ Đang lấy danh sách Token để cào lịch sử Volume...");
@@ -272,14 +272,13 @@ setInterval(() => {
 }, 60000);
 
 // ==========================================
-// 2. LOGIC TÍNH TOÁN AI PREDICTION (CHUẨN LIMIT VOL NHƯ CŨ)
+// 2. LOGIC TÍNH TOÁN AI PREDICTION (ĐÃ FIX LỖI TÊN BIẾN + LÀM MƯỢT 1 GIỜ)
 // ==========================================
 function calculateAiPrediction(staticData, accumulatedData) {
     // A. LẤY VOLUME TÍCH LŨY (CHỈ LẤY LIMIT LÀM GỐC)
     let currentVol = accumulatedData.limitAccumulated || 0;
     let usingLimit = true;
 
-    // Dự phòng hiếm hoi: Nếu token chưa hề có Limit Vol thì mới mượn tạm Total Vol
     if (currentVol === 0 && accumulatedData.totalAccumulated > 0) {
         currentVol = accumulatedData.totalAccumulated;
         usingLimit = false; 
@@ -294,7 +293,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
         let endTimeStr = staticData.endTime && staticData.endTime.includes(':') ? staticData.endTime : "13:00";
         if (endTimeStr.length === 5) endTimeStr += ":00";
         const endDate = new Date(`${staticData.end}T${endTimeStr}Z`);
-        const freezeDate = new Date(endDate.getTime() - 1 * 60 * 1000); // Khóa trước 1 phút
+        const freezeDate = new Date(endDate.getTime() - 1 * 60 * 1000); 
 
         if (now >= freezeDate) {
             isFinalized = true;
@@ -302,13 +301,15 @@ function calculateAiPrediction(staticData, accumulatedData) {
             const diffSeconds = (endDate.getTime() - now.getTime()) / 1000;
             let velocity = 0;
             
-            // Trích xuất Tốc độ của riêng lệnh Limit (Bằng cách nhân Tỷ lệ Limit/Total)
-            if (accumulatedData.analysis && accumulatedData.analysis.speed60s) {
+            // 🐛 ĐÃ FIX LỖI CHÍ MẠNG TẠI ĐÂY: Biến lưu là `speed` chứ không phải `speed60s`
+            let rawSpeed = accumulatedData.analysis?.speed || 0; 
+            
+            if (rawSpeed > 0) {
                 if (usingLimit && accumulatedData.totalAccumulated > 0) {
                      const ratio = currentVol / accumulatedData.totalAccumulated;
-                     velocity = accumulatedData.analysis.speed60s * ratio;
+                     velocity = rawSpeed * ratio; // Lấy tốc độ tổng nhân tỷ lệ Limit
                 } else {
-                    velocity = accumulatedData.analysis.speed60s;
+                    velocity = rawSpeed;
                 }
             }
             
@@ -316,17 +317,17 @@ function calculateAiPrediction(staticData, accumulatedData) {
         }
     }
 
-    // C. TÍNH VOLUME HIỆU DỤNG (ÁP DỤNG LUẬT x4)
+    // C. TÍNH VOLUME HIỆU DỤNG (ÁP DỤNG LUẬT)
     let effectiveVol = projectedVol;
     const ruleType = staticData.ruleType || "trade_all";
     if (ruleType === 'buy_only') effectiveVol = projectedVol / 2;
     if (ruleType === 'trade_x4') effectiveVol = projectedVol * 4;
 
-    // D. TÍNH TICKET SIZE (Chỉ dùng để Debug)
+    // D. TÍNH TICKET SIZE (Đã fix tên biến ticket3s thành ticket)
     let ticketSize = 0;
     if (usingLimit && accumulatedData.limitTx > 0) ticketSize = currentVol / accumulatedData.limitTx;
     else if (accumulatedData.totalTx > 0) ticketSize = currentVol / accumulatedData.totalTx;
-    else if (accumulatedData.analysis && accumulatedData.analysis.ticket3s) ticketSize = accumulatedData.analysis.ticket3s;
+    else if (accumulatedData.analysis && accumulatedData.analysis.ticket) ticketSize = accumulatedData.analysis.ticket;
 
     // E. HỆ SỐ K VÀ ADMIN FACTOR
     const k = 1.03;
@@ -341,9 +342,32 @@ function calculateAiPrediction(staticData, accumulatedData) {
         }
     }
 
-    // F. CHIA WINNERS VÀ TÍNH TARGET DELTA
-    const finalTarget = (effectiveVol * finalK) / winners;
+    // F. CHIA WINNERS VÀ TÍNH TARGET THÔ
+    const rawTarget = (effectiveVol * finalK) / winners;
     
+    // ===============================================
+    // 🧠 THUẬT TOÁN LÀM MƯỢT (BÌNH QUÂN 1 TIẾNG)
+    // ===============================================
+    const alphaId = staticData.alphaId || staticData.symbol || "UNKNOWN";
+    if (!PREDICTION_SMOOTHING_CACHE[alphaId]) PREDICTION_SMOOTHING_CACHE[alphaId] = [];
+    
+    const nowTs = Date.now();
+    let cacheArr = PREDICTION_SMOOTHING_CACHE[alphaId];
+    
+    // Bỏ kết quả vào rổ
+    cacheArr.push({ ts: nowTs, val: rawTarget });
+    
+    // Trút bỏ dữ liệu cũ hơn 1 tiếng (3,600,000 mili-giây)
+    cacheArr = cacheArr.filter(item => nowTs - item.ts <= 3600000);
+    PREDICTION_SMOOTHING_CACHE[alphaId] = cacheArr;
+    
+    // Tính trung bình cộng của 1 tiếng
+    let sumTarget = 0;
+    cacheArr.forEach(item => sumTarget += item.val);
+    const finalTarget = cacheArr.length > 0 ? (sumTarget / cacheArr.length) : rawTarget;
+    // ===============================================
+    
+    // G. TÍNH DELTA (ĐỘ TĂNG SO VỚI LỊCH SỬ)
     let deltaVal = 0;
     const targets = staticData.history || [];
     let lastMinTarget = 0;
@@ -355,21 +379,19 @@ function calculateAiPrediction(staticData, accumulatedData) {
     
     deltaVal = lastMinTarget > 0 ? (finalTarget - lastMinTarget) : finalTarget;
 
-// --- BỎ LỆNH IF ĐI, CHO IN RA HẾT TẤT CẢ CÁC GIẢI ---
-    console.log(`\n=== DEBUG AI: ${staticData.alphaId || staticData.symbol || 'UNKNOWN'} ===`);
+    // IN RA LOG ĐỂ BẠN THEO DÕI SỰ LÌ ĐÒN CỦA NÓ
+    console.log(`\n=== DEBUG AI: ${alphaId} ===`);
     console.log(`1. Limit Hiện tại: $${currentVol.toLocaleString()}`);
-    console.log(`2. Tốc độ Realtime (Speed60s): $${(accumulatedData.analysis?.speed60s || 0).toFixed(2)} / giây`);
+    console.log(`2. Tốc độ Limit: $${(velocity || 0).toFixed(2)} / giây`); // In tốc độ đã quy đổi Limit
     console.log(`3. Thêm phần dự phóng: $${projectedVol.toLocaleString()}`);
-    console.log(`4. Volume Hiệu dụng (Sau luật x4/buy_only): $${effectiveVol.toLocaleString()}`);
-    console.log(`5. Công thức: (${effectiveVol.toLocaleString()} * ${finalK}) / ${winners} Winners`);
-    console.log(`=> KẾT QUẢ FINAL TARGET: ${finalTarget}`);
+    console.log(`4. Min Target Thô (Đang giật): ${Math.round(rawTarget)}`);
+    console.log(`=> KẾT QUẢ FINAL (Đã làm mượt 1H): ${Math.round(finalTarget)}`);
     console.log(`===============================\n`);
-    
-     
+
     return {
         target: Math.round(finalTarget),
         delta: Math.round(deltaVal),
-        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)}) ${usingLimit ? '[LIMIT DATA]' : ''}`,
+        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)}) ${usingLimit ? '[LIMIT]' : ''}`,
         R: finalK,
         status_label: isFinalized ? "FINALIZED" : "LIVE PREDICTION",
         debug_info: `Vol:${(effectiveVol/1e9).toFixed(2)}B Ticket:$${Math.round(ticketSize)}`,
