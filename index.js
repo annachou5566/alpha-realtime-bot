@@ -45,6 +45,58 @@ let ACTIVE_TOKEN_LIST = [];
 
 let TOKEN_METRICS_HISTORY = {}; 
 let MARKET_VOL_HISTORY = []; 
+
+// HÀM CÀO LỊCH SỬ NẾN 1D TỪ BINANCE (THAY THẾ BOT PYTHON)
+async function rebuild14DaysHistory() {
+    console.log("⏳ Đang cào dữ liệu nến 1D (13 ngày) từ Binance...");
+    let historyMap = {}; 
+
+    // 1. Lấy danh sách Token hợp lệ (Lọc sạch Chứng khoán RWA)
+    let symbols = Object.keys(GLOBAL_MARKET).filter(id => {
+        let t = GLOBAL_MARKET[id];
+        return t && t.ss !== 1 && t.ss !== true && id !== '_STATS';
+    });
+
+    if (symbols.length === 0) return;
+
+    // 2. Chia nhỏ gọi API (Mỗi lần 20 token để không bị Binance chặn)
+    for (let i = 0; i < symbols.length; i += 20) {
+        const chunk = symbols.slice(i, i + 20);
+        await Promise.all(chunk.map(async (id) => {
+            try {
+                let sym = id.replace('ALPHA_', '');
+                // Gọi API nến 1D của Binance Futures
+                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=1d&limit=14`;
+                const res = await fetch(url);
+                const data = await res.json();
+                
+                if (Array.isArray(data)) {
+                    data.forEach(candle => {
+                        let dateStr = new Date(candle[0]).toISOString().split('T')[0];
+                        let quoteVol = parseFloat(candle[7] || 0); // Vị trí số 7 là Volume USD
+                        
+                        if (!historyMap[dateStr]) historyMap[dateStr] = 0;
+                        historyMap[dateStr] += quoteVol;
+                    });
+                }
+            } catch (e) { /* Bỏ qua nếu lỗi mạng hoặc token ko có future */ }
+        }));
+        await new Promise(r => setTimeout(r, 500)); // Nghỉ 0.5s cho mượt
+    }
+
+    // 3. Đóng gói lại thành mảng chuẩn xác
+    let tempArr = [];
+    Object.keys(historyMap).sort().forEach(date => {
+        tempArr.push({ date: date, daily: historyMap[date], rolling: historyMap[date] });
+    });
+
+    // Bỏ qua ngày hôm nay (vì nến chưa đóng, Realtime sẽ gánh phần hôm nay)
+    let todayStr = new Date().toISOString().split('T')[0];
+    MARKET_VOL_HISTORY = tempArr.filter(x => x.date !== todayStr).slice(-13);
+    
+    console.log(`✅ Cào xong! Đã nạp thành công ${MARKET_VOL_HISTORY.length} ngày lịch sử quá khứ chuẩn 100%.`);
+}
+
 async function syncMarketHistory() {
     try {
         const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "market_vol_history.json" });
@@ -167,37 +219,16 @@ async function syncTailsFromR2() {
     }
 }
 
-let lastDay = new Date().getUTCDate();
+// THEO DÕI QUA NGÀY MỚI (CHẠY CÀO DATA SAU KHI GIAO THỪA 5 PHÚT)
+let lastHistoryDay = new Date().getUTCDate();
 setInterval(() => {
     const nowDay = new Date().getUTCDate();
-    if (nowDay !== lastDay) {
-        lastDay = nowDay;
-
-        // TÍNH VOLUME CHỐT SỔ HÔM QUA (BỎ QUA CHỨNG KHOÁN)
-        let totalDaily = 0, totalRolling = 0;
-        Object.values(GLOBAL_MARKET).forEach(t => {
-            if (t && t.ss !== 1 && t.ss !== true && t.id !== '_STATS' && t.v) {
-              
-                totalDaily += (t.r24 || 0); 
-                totalRolling += (t.r24 || 0);
-            }
-        });
-
-        // THÊM VÀO MẢNG LỊCH SỬ & GIỮ 14 NGÀY
-        let yStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-        MARKET_VOL_HISTORY = MARKET_VOL_HISTORY.filter(x => x.date !== yStr);
-        MARKET_VOL_HISTORY.push({ date: yStr, daily: totalDaily, rolling: totalRolling });
-        if (MARKET_VOL_HISTORY.length > 14) MARKET_VOL_HISTORY.shift(); 
+    if (nowDay !== lastHistoryDay) {
+        lastHistoryDay = nowDay;
+        console.log("🕛 Đã qua ngày mới! Đợi 5 phút để Binance đóng nến xong rồi cào...");
         
-        // LƯU LÊN R2
-        try {
-            const cmd = new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "market_vol_history.json", Body: JSON.stringify(MARKET_VOL_HISTORY), ContentType: "application/json" });
-            s3Client.send(cmd);
-        } catch(e) {}
-
-        SNAPSHOT_TAIL_TOTAL = {}; 
-        SNAPSHOT_TAIL_LIMIT = {};
-        console.log("🕛 Đã qua ngày mới! Chốt Biểu đồ Volume thành công...");
+        // Cố tình delay 5 phút (300000ms) để Binance cập nhật xong Klines 1D rồi mới cào
+        setTimeout(rebuild14DaysHistory, 5 * 60 * 1000); 
     }
 }, 60000);
 
@@ -522,12 +553,15 @@ app.get('/api/proxy', async (req, res) => {
 // START SERVER
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
+    // TÌM CỤM NÀY Ở DƯỚI CÙNG VÀ SỬA THÀNH:
     await syncHistoryFromR2();
+    await syncActiveHistory(); 
     await syncActiveConfig();
     await syncBaseData();
     await checkStartOffsets();
-    await syncMarketHistory();
-    await syncTailsFromR2(); 
+    await rebuild14DaysHistory();
+
+    await syncTailsFromR2();
     
     loopRealtime(); // Chạy duy nhất 1 nhịp đập 3s
     
