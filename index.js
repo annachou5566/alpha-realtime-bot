@@ -355,7 +355,8 @@ function calculateAiPrediction(staticData, accumulatedData) {
     
     deltaVal = lastMinTarget > 0 ? (finalTarget - lastMinTarget) : finalTarget;
 
-console.log(`\n=== DEBUG AI: ${staticData.alphaId || staticData.symbol || 'UNKNOWN'} ===`);
+// --- BỎ LỆNH IF ĐI, CHO IN RA HẾT TẤT CẢ CÁC GIẢI ---
+    console.log(`\n=== DEBUG AI: ${staticData.alphaId || staticData.symbol || 'UNKNOWN'} ===`);
     console.log(`1. Limit Hiện tại: $${currentVol.toLocaleString()}`);
     console.log(`2. Tốc độ Realtime (Speed60s): $${(accumulatedData.analysis?.speed60s || 0).toFixed(2)} / giây`);
     console.log(`3. Thêm phần dự phóng: $${projectedVol.toLocaleString()}`);
@@ -363,8 +364,8 @@ console.log(`\n=== DEBUG AI: ${staticData.alphaId || staticData.symbol || 'UNKNO
     console.log(`5. Công thức: (${effectiveVol.toLocaleString()} * ${finalK}) / ${winners} Winners`);
     console.log(`=> KẾT QUẢ FINAL TARGET: ${finalTarget}`);
     console.log(`===============================\n`);
-    }
     
+     
     return {
         target: Math.round(finalTarget),
         delta: Math.round(deltaVal),
