@@ -44,57 +44,63 @@ let SNAPSHOT_TAIL_LIMIT = {};
 let ACTIVE_TOKEN_LIST = [];  
 
 let TOKEN_METRICS_HISTORY = {}; 
-let MARKET_VOL_HISTORY = []; 
+let MARKET_VOL_HISTORY = [];
 
-// HÀM CÀO LỊCH SỬ NẾN 1D TỪ BINANCE (THAY THẾ BOT PYTHON)
-async function rebuild14DaysHistory() {
-    console.log("⏳ Đang cào dữ liệu nến 1D (13 ngày) từ Binance...");
+// HÀM LẤY 14 CÂY NẾN 1D TỪ API BAPI (WEB3/DEFI)
+async function fetch14DaysHistoryBapi() {
+    console.log("⏳ Đang cào 14 ngày lịch sử Volume từ Binance Web3...");
     let historyMap = {}; 
 
-    // 1. Lấy danh sách Token hợp lệ (Lọc sạch Chứng khoán RWA)
-    let symbols = Object.keys(GLOBAL_MARKET).filter(id => {
-        let t = GLOBAL_MARKET[id];
-        return t && t.ss !== 1 && t.ss !== true && id !== '_STATS';
-    });
+    // Lọc lấy danh sách token hợp lệ (Cần có contract và chainId)
+    // Lưu ý: Tùy theo cách bạn lưu trong GLOBAL_MARKET, ta cần contractAddress và chainId
+    let tokensToFetch = Object.values(GLOBAL_MARKET).filter(t => 
+        t && t.ss !== 1 && t.ss !== true && t.id !== '_STATS' && t.contractAddress // Đảm bảo có address
+    );
 
-    if (symbols.length === 0) return;
+    if (tokensToFetch.length === 0) return;
 
-    // 2. Chia nhỏ gọi API (Mỗi lần 20 token để không bị Binance chặn)
-    for (let i = 0; i < symbols.length; i += 20) {
-        const chunk = symbols.slice(i, i + 20);
-        await Promise.all(chunk.map(async (id) => {
+    // Chạy vòng lặp gọi API (Chia nhỏ mỗi cụm 10 token để chống Rate Limit)
+    for (let i = 0; i < tokensToFetch.length; i += 10) {
+        const chunk = tokensToFetch.slice(i, i + 10);
+        await Promise.all(chunk.map(async (t) => {
             try {
-                let sym = id.replace('ALPHA_', '');
-                // Gọi API nến 1D của Binance Futures
-                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=1d&limit=14`;
+                // Map chainName (BSC, ETH...) sang chainId (56, 1...) nếu cần
+                let chainId = t.chainId || (t.chain === 'BSC' ? 56 : (t.chain === 'ETH' ? 1 : 56));
+                let tokenAddr = t.contractAddress || t.contract;
+
+                const url = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=1d&limit=14&tokenAddress=${tokenAddr}&dataType=aggregate`;
                 const res = await fetch(url);
-                const data = await res.json();
+                const json = await res.json();
                 
-                if (Array.isArray(data)) {
-                    data.forEach(candle => {
-                        let dateStr = new Date(candle[0]).toISOString().split('T')[0];
-                        let quoteVol = parseFloat(candle[7] || 0); // Vị trí số 7 là Volume USD
+                if (json.success && json.data && json.data.klineInfos) {
+                    json.data.klineInfos.forEach(candle => {
+                        // candle[0]: Timestamp mở nến
+                        // candle[5]: Volume giao dịch
+                        let dateStr = new Date(parseInt(candle[0])).toISOString().split('T')[0];
+                        let vol = parseFloat(candle[5] || 0);
                         
                         if (!historyMap[dateStr]) historyMap[dateStr] = 0;
-                        historyMap[dateStr] += quoteVol;
+                        historyMap[dateStr] += vol;
                     });
                 }
-            } catch (e) { /* Bỏ qua nếu lỗi mạng hoặc token ko có future */ }
+            } catch (e) { 
+                // Lỗi mạng hoặc token bị lỗi -> bỏ qua
+            }
         }));
-        await new Promise(r => setTimeout(r, 500)); // Nghỉ 0.5s cho mượt
+        await new Promise(resolve => setTimeout(resolve, 300)); // Nghỉ 0.3s
     }
 
-    // 3. Đóng gói lại thành mảng chuẩn xác
+    // Đóng gói mảng 14 ngày
     let tempArr = [];
     Object.keys(historyMap).sort().forEach(date => {
         tempArr.push({ date: date, daily: historyMap[date], rolling: historyMap[date] });
     });
 
-    // Bỏ qua ngày hôm nay (vì nến chưa đóng, Realtime sẽ gánh phần hôm nay)
+    // Lọc bỏ ngày "hôm nay" (vì hôm nay nến chưa đóng, Backend Realtime tự lo)
     let todayStr = new Date().toISOString().split('T')[0];
     MARKET_VOL_HISTORY = tempArr.filter(x => x.date !== todayStr).slice(-13);
-    
-    console.log(`✅ Cào xong! Đã nạp thành công ${MARKET_VOL_HISTORY.length} ngày lịch sử quá khứ chuẩn 100%.`);
+
+    console.log(`✅ Cào BAPI xong! Nạp thành công ${MARKET_VOL_HISTORY.length} ngày lịch sử cực chuẩn.`);
 }
 
 async function syncMarketHistory() {
@@ -220,15 +226,32 @@ async function syncTailsFromR2() {
 }
 
 // THEO DÕI QUA NGÀY MỚI (CHẠY CÀO DATA SAU KHI GIAO THỪA 5 PHÚT)
+// THEO DÕI QUA NGÀY MỚI (LƯU LẠI 1 CÂY NẾN CỦA HÔM NAY)
 let lastHistoryDay = new Date().getUTCDate();
 setInterval(() => {
     const nowDay = new Date().getUTCDate();
     if (nowDay !== lastHistoryDay) {
         lastHistoryDay = nowDay;
-        console.log("🕛 Đã qua ngày mới! Đợi 5 phút để Binance đóng nến xong rồi cào...");
         
-        // Cố tình delay 5 phút (300000ms) để Binance cập nhật xong Klines 1D rồi mới cào
-        setTimeout(rebuild14DaysHistory, 5 * 60 * 1000); 
+        // 1. Tính tổng Vol Realtime của ngày vừa kết thúc
+        let totalDaily = 0;
+        Object.values(GLOBAL_MARKET).forEach(t => {
+            if (t && t.ss !== 1 && t.ss !== true && t.id !== '_STATS' && t.v) {
+                totalDaily += (t.r24 || 0); // Khoảnh khắc 00:00, r24 chính là Daily Vol trọn vẹn
+            }
+        });
+
+        // 2. Nhét vào mảng lịch sử, ép mảng chỉ chứa 14 ngày
+        let yStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+        MARKET_VOL_HISTORY = MARKET_VOL_HISTORY.filter(x => x.date !== yStr); // Tránh trùng
+        MARKET_VOL_HISTORY.push({ date: yStr, daily: totalDaily, rolling: totalDaily });
+        if (MARKET_VOL_HISTORY.length > 14) MARKET_VOL_HISTORY.shift(); 
+        
+        // 3. Reset Đuôi để ngày mới đếm từ $0
+        SNAPSHOT_TAIL_TOTAL = {}; 
+        SNAPSHOT_TAIL_LIMIT = {};
+        
+        console.log("🕛 Đã qua ngày mới! Cập nhật 1 cây nến vào lịch sử thành công.");
     }
 }, 60000);
 
@@ -553,13 +576,14 @@ app.get('/api/proxy', async (req, res) => {
 // START SERVER
 app.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
-    // TÌM CỤM NÀY Ở DƯỚI CÙNG VÀ SỬA THÀNH:
+    // TÌM ĐOẠN KHỞI ĐỘNG CỦA BẠN:
     await syncHistoryFromR2();
     await syncActiveHistory(); 
     await syncActiveConfig();
     await syncBaseData();
     await checkStartOffsets();
-    await rebuild14DaysHistory();
+    
+    await fetch14DaysHistoryBapi(); 
 
     await syncTailsFromR2();
     
