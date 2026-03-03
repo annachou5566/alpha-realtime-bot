@@ -355,6 +355,17 @@ function calculateAiPrediction(staticData, accumulatedData) {
     
     deltaVal = lastMinTarget > 0 ? (finalTarget - lastMinTarget) : finalTarget;
 
+if (staticData.alphaId === 'IRYS' || staticData.symbol === 'IRYS') {
+        console.log(`\n=== DEBUG AI: ${staticData.symbol || 'IRYS'} ===`);
+        console.log(`1. Limit Hiện tại: $${currentVol.toLocaleString()}`);
+        console.log(`2. Tốc độ Realtime (Speed60s): $${(accumulatedData.analysis?.speed60s || 0).toFixed(2)} / giây`);
+        console.log(`3. Thêm phần dự phóng: $${projectedVol.toLocaleString()}`);
+        console.log(`4. Volume Hiệu dụng (Sau luật x4/buy_only): $${effectiveVol.toLocaleString()}`);
+        console.log(`5. Công thức: (${effectiveVol.toLocaleString()} * ${finalK}) / ${winners} Winners`);
+        console.log(`=> KẾT QUẢ FINAL TARGET: ${finalTarget}`);
+        console.log(`===============================\n`);
+    }
+    
     return {
         target: Math.round(finalTarget),
         delta: Math.round(deltaVal),
