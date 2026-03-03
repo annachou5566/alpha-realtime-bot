@@ -177,7 +177,8 @@ setInterval(() => {
         let totalDaily = 0, totalRolling = 0;
         Object.values(GLOBAL_MARKET).forEach(t => {
             if (t && t.ss !== 1 && t.ss !== true && t.id !== '_STATS' && t.v) {
-                totalDaily += (t.v.dt || 0);
+              
+                totalDaily += (t.r24 || 0); 
                 totalRolling += (t.r24 || 0);
             }
         });
