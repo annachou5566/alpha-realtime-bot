@@ -158,19 +158,36 @@ async function syncActiveConfig() {
                 if (meta.ai_prediction && meta.ai_prediction.status_label === 'FINALIZED') isActive = false;
                 if (meta.end && meta.end < todayStr) isActive = false;
 
-                if (isActive && meta.alphaId) {
+                if (meta.alphaId) {
                     meta.contract = row.contract || meta.contract;
                     if(!meta.chainId && meta.chain) {
                         const cMap = {'bsc': 56, 'bnb': 56, 'eth': 1, 'base': 8453, 'arb': 42161, 'op': 10, 'polygon': 137};
                         meta.chainId = cMap[String(meta.chain).toLowerCase()] || 56;
                     }
-                    newActive[meta.alphaId] = { ...meta, db_id: row.id };
-                    if (!newTokens.includes(meta.alphaId)) newTokens.push(meta.alphaId);
+
+                    if (isActive) {
+                        // 1. Giải đang chạy -> Cho vào ACTIVE_CONFIG để chạy Realtime
+                        newActive[meta.alphaId] = { ...meta, db_id: row.id };
+                        if (!newTokens.includes(meta.alphaId)) newTokens.push(meta.alphaId);
+                    } else {
+                        // 2. BÍ QUYẾT LÀ Ở ĐÂY: Giải đã kết thúc -> Cập nhật Min Vol vào HISTORY_CACHE
+                        if (HISTORY_CACHE[meta.alphaId]) {
+                            // Nếu Admin nhập Min Vol mới (meta.history) ở Supabase, ta ép nó vào RAM
+                            if (meta.history) {
+                                HISTORY_CACHE[meta.alphaId].history = meta.history;
+                                if (!HISTORY_CACHE[meta.alphaId].data) HISTORY_CACHE[meta.alphaId].data = {};
+                                HISTORY_CACHE[meta.alphaId].data.history = meta.history;
+                            }
+                        } else {
+                            // Nếu lỡ Server restart mà giải này chưa kịp có trong RAM -> Nạp nó vào
+                            HISTORY_CACHE[meta.alphaId] = { ...meta, db_id: row.id };
+                        }
+                    }
                 }
             });
             ACTIVE_CONFIG = newActive;
             ACTIVE_TOKEN_LIST = newTokens;
-            console.log(`⚡ Sync Config: ${Object.keys(ACTIVE_CONFIG).length} giải ACTIVE.`);
+            console.log(`⚡ Sync Config: ${Object.keys(ACTIVE_CONFIG).length} ACTIVE, History updated.`);
         }
     } catch (e) { console.error("❌ Sync Active Config Error:", e.message); }
 }
