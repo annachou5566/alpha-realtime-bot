@@ -310,7 +310,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
         let endTimeStr = staticData.endTime && staticData.endTime.includes(':') ? staticData.endTime : "13:00";
         if (endTimeStr.length === 5) endTimeStr += ":00";
         const endDate = new Date(`${staticData.end}T${endTimeStr}Z`);
-        const freezeDate = new Date(endDate.getTime() - 1 * 60 * 1000); 
+        const freezeDate = endDate; 
 
         if (now >= freezeDate) {
             isFinalized = true;
@@ -412,6 +412,11 @@ function calculateAiPrediction(staticData, accumulatedData) {
 // ==========================================
 async function finalizeTournament(alphaId, finalData, predictionResult) {
     const config = ACTIVE_CONFIG[alphaId];
+    
+    if (ACTIVE_CONFIG[alphaId]) {
+        delete ACTIVE_CONFIG[alphaId];
+    }
+
     if (!config || HISTORY_CACHE[alphaId]) return;
 
     console.log(`🏁 ĐANG CHỐT SỔ GIẢI ĐẤU: ${alphaId} ...`);
