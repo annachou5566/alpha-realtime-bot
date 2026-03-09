@@ -474,14 +474,38 @@ async function loopRealtime() {
                 });
             }
 
+            // --- BƯỚC 1: PRE-SCAN (QUÉT TRƯỚC TẤT CẢ TOKEN VÀO MAP) ---
+            const symbolMap = {};
+            resTot.data.data.forEach(t => {
+                const id = t.alphaId;
+                if (!id) return;
+                const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
+                const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
+                
+                let dt = Math.max(0, parseFloat(t.volume24h || 0) - tailTot);
+                let dl = Math.max(0, (limitMap[id] || 0) - tailLim);
+                if (dt < dl) dt = dl;
+
+                let sym = t.symbol || t.baseAsset || "";
+                sym = sym.split('(')[0].trim().toUpperCase(); // Chuẩn hóa tên (VD: AAPLON)
+                
+                symbolMap[sym] = {
+                    dt: dt,
+                    dl: dl,
+                    tx: limitTxMap[id] || 0,
+                    r24: parseFloat(t.volume24h || 0)
+                };
+            });
+            // -----------------------------------------------------------
+
             resTot.data.data.forEach(t => {
                 const id = t.alphaId;
                 if (!id) return;
                 
-                const rollVolTot = parseFloat(t.volume24h || 0);
-                const rollVolLim = limitMap[id] || 0;
-                const currentPrice = parseFloat(t.price || 0);
-                const currentTx = limitTxMap[id] || 0;
+                let rollVolTot = parseFloat(t.volume24h || 0);
+                let rollVolLim = limitMap[id] || 0;
+                let currentPrice = parseFloat(t.price || 0);
+                let currentTx = limitTxMap[id] || 0;
 
                 // --- 1. TÍNH DAILY VOL BẰNG CÁCH CẮT ĐUÔI ---
                 const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
@@ -490,6 +514,28 @@ async function loopRealtime() {
                 let dailyTot = Math.max(0, rollVolTot - tailTot);
                 let dailyLim = Math.max(0, rollVolLim - tailLim);
                 if (dailyTot < dailyLim) dailyTot = dailyLim; 
+
+                // --- BƯỚC 2: CỘNG DỒN VOL NẾU ĐÂY LÀ GIẢI ECOSYSTEM (ĐA TOKEN) ---
+                if (ACTIVE_CONFIG[id] && ACTIVE_CONFIG[id].inputTokens && ACTIVE_CONFIG[id].inputTokens.length > 0) {
+                    let sumTot = 0, sumLim = 0, sumTx = 0, sumR24 = 0;
+                    
+                    ACTIVE_CONFIG[id].inputTokens.forEach(tokenSym => {
+                        let cleanSym = tokenSym.split('(')[0].trim().toUpperCase();
+                        if (symbolMap[cleanSym]) {
+                            sumTot += symbolMap[cleanSym].dt;
+                            sumLim += symbolMap[cleanSym].dl;
+                            sumTx += symbolMap[cleanSym].tx;
+                            sumR24 += symbolMap[cleanSym].r24;
+                        }
+                    });
+
+                    // Ghi đè lại các biến của Token chính (IAUON) bằng tổng của 20 Token
+                    dailyTot = sumTot;
+                    dailyLim = sumLim;
+                    currentTx = sumTx;
+                    rollVolTot = sumR24;
+                }
+                // -------------------------------------------------------------------
 
                 // ====================================================
                 // KHU VỰC 1: CẬP NHẬT TẤT CẢ (Cho Tab Alpha Market)
