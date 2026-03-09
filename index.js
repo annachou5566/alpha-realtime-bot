@@ -515,25 +515,25 @@ async function loopRealtime() {
                 let dailyLim = Math.max(0, rollVolLim - tailLim);
                 if (dailyTot < dailyLim) dailyTot = dailyLim; 
 
-                // --- BƯỚC 2: CỘNG DỒN VOL NẾU ĐÂY LÀ GIẢI ECOSYSTEM (ĐA TOKEN) ---
+                // --- BƯỚC 2: ĐỒNG BỘ DATA TỪ DENO (BỎ QUA TÍNH REALTIME ĐỂ TRÁNH SỐ ẢO 50 TRIỆU) ---
                 if (ACTIVE_CONFIG[id] && ACTIVE_CONFIG[id].inputTokens && ACTIVE_CONFIG[id].inputTokens.length > 0) {
-                    let sumTot = 0, sumLim = 0, sumTx = 0, sumR24 = 0;
+                    const dbData = ACTIVE_CONFIG[id]; // Lấy dữ liệu Deno đã tính sẵn trong Supabase
                     
-                    ACTIVE_CONFIG[id].inputTokens.forEach(tokenSym => {
-                        let cleanSym = tokenSym.split('(')[0].trim().toUpperCase();
-                        if (symbolMap[cleanSym]) {
-                            sumTot += symbolMap[cleanSym].dt;
-                            sumLim += symbolMap[cleanSym].dl;
-                            sumTx += symbolMap[cleanSym].tx;
-                            sumR24 += symbolMap[cleanSym].r24;
-                        }
-                    });
+                    // 1. Ép các biến Realtime nhận thẳng con số chuẩn 100% từ Deno
+                    dailyTot = parseFloat(dbData.real_alpha_volume || 0);
+                    dailyLim = parseFloat(dbData.limit_daily_volume || 0);
+                    currentTx = parseFloat(dbData.daily_tx_count || 0);
+                    rollVolTot = parseFloat(dbData.real_alpha_volume || 0);
 
-                    // Ghi đè lại các biến của Token chính (IAUON) bằng tổng của 20 Token
-                    dailyTot = sumTot;
-                    dailyLim = sumLim;
-                    currentTx = sumTx;
-                    rollVolTot = sumR24;
+                    // 2. Chỉnh lại "Quá khứ" (Base History) trong RAM để khi xuống Khu vực 3, 
+                    // thuật toán cộng dồn sẽ ra kết quả khớp y xì con số 242k của Deno.
+                    START_OFFSET_CACHE[id] = 0; 
+                    BASE_HISTORY_DATA[id] = {
+                        base_total_vol: parseFloat(dbData.total_accumulated_volume || 0) - dailyTot,
+                        base_limit_vol: parseFloat(dbData.limit_accumulated_volume || 0) - dailyLim,
+                        base_total_tx: parseFloat(dbData.tx_count || 0) - currentTx,
+                        base_limit_tx: parseFloat(dbData.limit_accumulated_tx || 0) - currentTx
+                    };
                 }
                 // -------------------------------------------------------------------
 
