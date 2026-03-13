@@ -4,7 +4,10 @@ const axios = require('axios');
 const cors = require('cors');
 const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { createClient } = require('@supabase/supabase-js');
-
+const https = require('https'); 
+axios.defaults.httpsAgent = new https.Agent({
+    servername: 'www.binance.com' 
+});
 const app = express();
 const PORT = process.env.PORT || 3000;
 const FAKE_HEADERS = {
