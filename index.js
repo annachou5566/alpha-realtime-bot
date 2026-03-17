@@ -1,5 +1,8 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
+const { Server } = require("socket.io");
+const WebSocket = require('ws');
 const axios = require('axios');
 const cors = require('cors');
 const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
@@ -9,6 +12,10 @@ axios.defaults.httpsAgent = new https.Agent({
     servername: 'www.binance.com' 
 });
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: { origin: '*' }
+});
 const PORT = process.env.PORT || 3000;
 const FAKE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
@@ -732,21 +739,104 @@ app.get('/api/proxy', async (req, res) => {
     }
 });
 
+// ==========================================
+// 5. ENGINE: BINANCE WEBSOCKET CLIENT
+// ==========================================
+let binanceWs;
+
+function connectBinanceWS() {
+    binanceWs = new WebSocket('wss://nbstream.binance.com/w3w/wsa/stream');
+
+    binanceWs.on('open', () => {
+        console.log("🟢 [WS] Đã kết nối với luồng Binance!");
+        // Gửi lệnh đăng ký stream toàn thị trường
+        binanceWs.send(JSON.stringify({
+            "method": "SUBSCRIBE",
+            "params": ["came@allTokens@ticker24"],
+            "id": 1
+        }));
+    });
+
+    binanceWs.on('message', (data) => {
+        try {
+            const msg = JSON.parse(data);
+            
+            // Nếu là data của stream ticker24
+            if (msg.stream === 'came@allTokens@ticker24' && msg.data && msg.data.d) {
+                const tokens = msg.data.d;
+                let hasChanges = false;
+                const deltaUpdates = {}; // Chỉ gói những token có thay đổi để gửi đi cho nhẹ
+
+                // Lặp qua mảng tick của Binance
+                tokens.forEach(t => {
+                    const id = t.ca; // Contract address (Binance dùng cái này làm ID)
+                    
+                    // Chúng ta cần map cái 'ca' này với 'alphaId' trong GLOBAL_MARKET của bạn
+                    // Chỗ này tôi dùng hàm tìm kiếm, nếu bạn có Map riêng thì sẽ nhanh hơn
+                    const alphaId = Object.keys(GLOBAL_MARKET).find(key => 
+                        ACTIVE_CONFIG[key] && ACTIVE_CONFIG[key].contract && ACTIVE_CONFIG[key].contract.toLowerCase() === id.toLowerCase()
+                    );
+
+                    if (alphaId && GLOBAL_MARKET[alphaId]) {
+                        const newPrice = parseFloat(t.p);
+                        const newVol24 = parseFloat(t.vol24);
+                        
+                        // Chỉ cập nhật và gửi xuống nếu giá có sự thay đổi
+                        if (GLOBAL_MARKET[alphaId].p !== newPrice) {
+                            GLOBAL_MARKET[alphaId].p = newPrice;
+                            GLOBAL_MARKET[alphaId].c = parseFloat(t.pc24); // % thay đổi
+                            GLOBAL_MARKET[alphaId].r24 = newVol24; // Rolling 24h
+                            
+                            // (Logic cắt đuôi để tính dailyTot bạn có thể kẹp thêm vào đây nếu muốn)
+                            // const currentMinute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+                            // const tailTot = SNAPSHOT_TAIL_TOTAL[alphaId]?.[currentMinute] || 0;
+                            // GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
+
+                            // Gói vào cục Delta để gửi Frontend
+                            deltaUpdates[alphaId] = GLOBAL_MARKET[alphaId];
+                            hasChanges = true;
+                        }
+                    }
+                });
+
+                // Nếu có token thay đổi giá, phát thanh cục Delta qua Socket.io
+                if (hasChanges) {
+                    io.emit('market_delta_update', deltaUpdates);
+                }
+            }
+        } catch (e) {
+            // Im lặng bỏ qua lỗi parse JSON nhỏ lẻ
+        }
+    });
+
+    binanceWs.on('close', () => {
+        console.log("🔴 [WS] Mất kết nối Binance. Đang thử lại sau 3s...");
+        setTimeout(connectBinanceWS, 3000); // Auto-reconnect
+    });
+    
+    binanceWs.on('error', (err) => {
+        console.error("⚠️ [WS] Lỗi kết nối:", err.message);
+    });
+}
+
 // START SERVER
-// START SERVER
-app.listen(PORT, async () => {
+server.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
     
     await syncHistoryFromR2();
     await syncActiveConfig();
     await syncBaseData();
     await checkStartOffsets();
-    
     await fetch14DaysHistoryBapi(); 
-
     await syncTailsFromR2();
     
-    loopRealtime(); 
+    // 1. CHẠY VÒI WEBSOCKET TICK-BY-TICK
+    connectBinanceWS();
+    
+    // 2. PHƯƠNG ÁN DỰ PHÒNG (FALLBACK): Giữ nguyên vòng lặp REST API!
+    // Nhưng để tiết kiệm băng thông và không bị limit, ta giãn nó ra 10s hoặc 15s một lần
+    // Vòng lặp này đảm bảo nếu Binance WS sót data hoặc sập, RAM vẫn luôn được chuẩn hóa.
+    setInterval(loopRealtime, 10000); // Đổi hàm tự gọi thành setInterval 10s
     
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
     setInterval(syncBaseData, 30 * 60 * 1000);   
