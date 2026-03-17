@@ -551,6 +551,7 @@ async function loopRealtime() {
                 // KHU VỰC 1: CẬP NHẬT TẤT CẢ (Cho Tab Alpha Market)
                 // ====================================================
                 GLOBAL_MARKET[id] = {
+                    ca: t.contractAddress,
                     p: currentPrice,
                     c: parseFloat(t.percentChange24h || t.priceChangePercent || 0),
                     r24: rollVolTot,
@@ -675,7 +676,6 @@ async function loopRealtime() {
 
         } // <-- Đóng của if (resTot.data?.success)
     } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
-    setTimeout(loopRealtime, 3000); 
 }
 
 // ==========================================
@@ -761,45 +761,48 @@ function connectBinanceWS() {
         try {
             const msg = JSON.parse(data);
             
-            // Nếu là data của stream ticker24
             if (msg.stream === 'came@allTokens@ticker24' && msg.data && msg.data.d) {
                 const tokens = msg.data.d;
                 let hasChanges = false;
-                const deltaUpdates = {}; // Chỉ gói những token có thay đổi để gửi đi cho nhẹ
+                const deltaUpdates = {}; 
+                const currentMinute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
 
-                // Lặp qua mảng tick của Binance
+                // 1. TẠO TỪ ĐIỂN MAP (Siêu nhanh - O(1))
+                const caToAlphaId = {};
+                for (const k in GLOBAL_MARKET) {
+                    if (GLOBAL_MARKET[k].ca) {
+                        caToAlphaId[GLOBAL_MARKET[k].ca.toLowerCase()] = k;
+                    }
+                }
+
+                // 2. LẶP TICK TỪ BINANCE
                 tokens.forEach(t => {
-                    const id = t.ca; // Contract address (Binance dùng cái này làm ID)
-                    
-                    // Chúng ta cần map cái 'ca' này với 'alphaId' trong GLOBAL_MARKET của bạn
-                    // Chỗ này tôi dùng hàm tìm kiếm, nếu bạn có Map riêng thì sẽ nhanh hơn
-                    const alphaId = Object.keys(GLOBAL_MARKET).find(key => 
-                        ACTIVE_CONFIG[key] && ACTIVE_CONFIG[key].contract && ACTIVE_CONFIG[key].contract.toLowerCase() === id.toLowerCase()
-                    );
+                    // CẮT BỎ ĐUÔI @56 TỪ BINANCE ĐỂ MATCHING CHUẨN XÁC
+                    const contractStr = String(t.ca).split('@')[0].toLowerCase(); 
+                    const alphaId = caToAlphaId[contractStr]; // Trỏ thẳng 1 phát ăn ngay
 
                     if (alphaId && GLOBAL_MARKET[alphaId]) {
                         const newPrice = parseFloat(t.p);
                         const newVol24 = parseFloat(t.vol24);
                         
-                        // Chỉ cập nhật và gửi xuống nếu giá có sự thay đổi
-                        if (GLOBAL_MARKET[alphaId].p !== newPrice) {
+                        // CHỈ BẮN LÊN WEB NẾU CÓ NHẢY GIÁ HOẶC VOL
+                        if (GLOBAL_MARKET[alphaId].p !== newPrice || GLOBAL_MARKET[alphaId].r24 !== newVol24) {
                             GLOBAL_MARKET[alphaId].p = newPrice;
-                            GLOBAL_MARKET[alphaId].c = parseFloat(t.pc24); // % thay đổi
-                            GLOBAL_MARKET[alphaId].r24 = newVol24; // Rolling 24h
+                            GLOBAL_MARKET[alphaId].c = parseFloat(t.pc24); 
+                            GLOBAL_MARKET[alphaId].r24 = newVol24; 
                             
-                            // (Logic cắt đuôi để tính dailyTot bạn có thể kẹp thêm vào đây nếu muốn)
-                            // const currentMinute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
-                            // const tailTot = SNAPSHOT_TAIL_TOTAL[alphaId]?.[currentMinute] || 0;
-                            // GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
+                            // Cắt đuôi Realtime (Giữ nguyên logic cực hay của bạn)
+                            const tailTot = SNAPSHOT_TAIL_TOTAL[alphaId]?.[currentMinute] || 0;
+                            if (GLOBAL_MARKET[alphaId].v) {
+                                GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
+                            }
 
-                            // Gói vào cục Delta để gửi Frontend
                             deltaUpdates[alphaId] = GLOBAL_MARKET[alphaId];
                             hasChanges = true;
                         }
                     }
                 });
 
-                // Nếu có token thay đổi giá, phát thanh cục Delta qua Socket.io
                 if (hasChanges) {
                     io.emit('market_delta_update', deltaUpdates);
                 }
