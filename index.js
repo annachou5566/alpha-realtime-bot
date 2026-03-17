@@ -6,7 +6,7 @@ const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/clien
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https'); 
 
-// ⚡ CÁC THƯ VIỆN WEBSOCKET VÀ HTTP MỚI
+// ⚡ THƯ VIỆN WEBSOCKET
 const http = require('http');
 const { Server } = require("socket.io");
 const WebSocket = require('ws');
@@ -16,6 +16,7 @@ axios.defaults.httpsAgent = new https.Agent({
 });
 
 const app = express();
+
 // ⚡ KHỞI TẠO SOCKET.IO ĐÈ LÊN EXPRESS
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
@@ -61,7 +62,7 @@ let TOKEN_METRICS_HISTORY = {};
 let MARKET_VOL_HISTORY = [];
 let PREDICTION_SMOOTHING_CACHE = {};
 
-// HÀM LẤY 14 CÂY NẾN 1D TỪ API BAPI
+// HÀM LẤY 14 CÂY NẾN 1D TỪ API BAPI (WEB3/DEFI)
 async function fetch14DaysHistoryBapi() {
     console.log("⏳ Đang lấy danh sách Token để cào lịch sử Volume...");
     let historyMap = {}; 
@@ -81,7 +82,10 @@ async function fetch14DaysHistoryBapi() {
             !t.rwaInfo
         );
 
-        if (tokensToFetch.length === 0) return;
+        if (tokensToFetch.length === 0) {
+            console.log("⚠️ Không tìm thấy token nào hợp lệ để cào.");
+            return;
+        }
 
         console.log(`🎯 Tìm thấy ${tokensToFetch.length} tokens. Bắt đầu cào Klines 1D...`);
 
@@ -105,9 +109,9 @@ async function fetch14DaysHistoryBapi() {
                             historyMap[dateStr] += vol;
                         });
                     }
-                } catch (e) {}
+                } catch (e) { }
             }));
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 300)); 
         }
 
         let tempArr = [];
@@ -189,7 +193,7 @@ async function syncActiveConfig() {
             ACTIVE_TOKEN_LIST = newTokens;
             console.log(`⚡ Sync Config: ${Object.keys(ACTIVE_CONFIG).length} ACTIVE, History updated.`);
         }
-    } catch (e) {}
+    } catch (e) { console.error("❌ Sync Active Config Error:", e.message); }
 }
 
 async function syncBaseData() {
@@ -228,6 +232,9 @@ async function checkStartOffsets() {
     }
 }
 
+// ==========================================
+// 1.5. ĐỒNG BỘ "CÁI ĐUÔI" TỪ PYTHON BOT
+// ==========================================
 async function syncTailsFromR2() {
     try {
         const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "tails_cache.json" });
@@ -259,6 +266,7 @@ setInterval(() => {
     const nowDay = new Date().getUTCDate();
     if (nowDay !== lastHistoryDay) {
         lastHistoryDay = nowDay;
+        
         let totalDaily = 0;
         Object.values(GLOBAL_MARKET).forEach(t => {
             if (t && t.ss !== 1 && t.ss !== true && t.id !== '_STATS' && t.v) {
@@ -279,7 +287,7 @@ setInterval(() => {
 }, 60000);
 
 // ==========================================
-// 2. LOGIC TÍNH TOÁN AI PREDICTION 
+// 2. LOGIC TÍNH TOÁN AI PREDICTION
 // ==========================================
 function calculateAiPrediction(staticData, accumulatedData) {
     let currentVol = accumulatedData.limitAccumulated || 0;
@@ -348,6 +356,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
     
     const nowTs = Date.now();
     let cacheArr = PREDICTION_SMOOTHING_CACHE[alphaId];
+    
     cacheArr.push({ ts: nowTs, val: rawTarget });
     cacheArr = cacheArr.filter(item => nowTs - item.ts <= 3600000);
     PREDICTION_SMOOTHING_CACHE[alphaId] = cacheArr;
@@ -379,10 +388,11 @@ function calculateAiPrediction(staticData, accumulatedData) {
 }
 
 // ==========================================
-// 3. AUTO-FINALIZE 
+// 3. AUTO-FINALIZE
 // ==========================================
 async function finalizeTournament(alphaId, finalData, predictionResult) {
     const config = ACTIVE_CONFIG[alphaId];
+    
     if (ACTIVE_CONFIG[alphaId]) delete ACTIVE_CONFIG[alphaId];
     if (!config || HISTORY_CACHE[alphaId]) return;
 
@@ -408,7 +418,6 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 
     try { await supabase.from('tournaments').update({ data: finalObj }).eq('id', config.db_id); } catch (e) {}
     HISTORY_CACHE[alphaId] = finalObj;
-    delete ACTIVE_CONFIG[alphaId];
 
     try {
         const cmd = new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: HISTORY_FILE_KEY, Body: JSON.stringify(HISTORY_CACHE), ContentType: "application/json" });
@@ -418,11 +427,11 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 }
 
 // ==========================================
-// 4. VÒNG LẶP DỰ PHÒNG (REST API FALLBACK)
+// 4. VÒNG LẶP REALTIME (FALLBACK API)
 // ==========================================
 async function loopRealtime() {
     try {
-        // Nâng thời gian timeout lên 10000ms để tránh văng log lỗi
+        // ĐÃ SỬA: Tăng timeout lên 10 giây để chống nghẽn
         const [resTot, resLim] = await Promise.all([
             axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 10000 }),
             axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 10000 })
@@ -460,6 +469,7 @@ async function loopRealtime() {
 
                 if (ACTIVE_CONFIG[id] && ACTIVE_CONFIG[id].inputTokens && ACTIVE_CONFIG[id].inputTokens.length > 0) {
                     const dbData = ACTIVE_CONFIG[id]; 
+                    
                     dailyTot = parseFloat(dbData.real_alpha_volume || 0);
                     dailyLim = parseFloat(dbData.limit_daily_volume || 0);
                     currentTx = parseFloat(dbData.daily_tx_count || 0);
@@ -474,9 +484,9 @@ async function loopRealtime() {
                     };
                 }
 
-                // CẬP NHẬT BIẾN GLOBAL (Thêm ca: t.contractAddress để map với WS)
+                // ĐÃ SỬA: Cập nhật biến ca để hứng WS
                 GLOBAL_MARKET[id] = {
-                    ca: t.contractAddress, // Quan trọng: Để ánh xạ WS
+                    ca: t.contractAddress,
                     p: currentPrice,
                     c: parseFloat(t.percentChange24h || t.priceChangePercent || 0),
                     r24: rollVolTot,
@@ -512,6 +522,7 @@ async function loopRealtime() {
                 if (history.length > 1) {
                     const oldest60s = history[0];
                     const newest = history[history.length - 1];
+
                     let totalBuy60s = 0, totalSell60s = 0;
                     let maxP60 = -1, minP60 = Infinity;
 
@@ -542,19 +553,24 @@ async function loopRealtime() {
                 const config = ACTIVE_CONFIG[id];
                 const base = BASE_HISTORY_DATA[id] || {};
                 const nowStr = now.toISOString().split('T')[0];
+
                 const offset = parseFloat(START_OFFSET_CACHE[id] || 0);
-                
                 let effectiveTodayVol = parseFloat(dailyTot || 0);
                 if (config.start === nowStr) effectiveTodayVol = Math.max(0, effectiveTodayVol - offset);
 
                 const totalAccumulated = parseFloat(base.base_total_vol || 0) + effectiveTodayVol;
                 const limitAccumulated = parseFloat(base.base_limit_vol || 0) + parseFloat(dailyLim || 0);
+
                 const realTx = parseFloat(currentTx || 0);
                 const limitTxAccumulated = parseFloat(base.base_limit_tx || 0) + realTx; 
                 const totalTxAccumulated = parseFloat(base.base_total_tx || 0) + realTx;
 
                 const aiResult = calculateAiPrediction(config, {
-                    totalAccumulated, limitAccumulated, limitTx: limitTxAccumulated, totalTx: totalTxAccumulated, analysis: GLOBAL_MARKET[id].analysis
+                    totalAccumulated, 
+                    limitAccumulated, 
+                    limitTx: limitTxAccumulated, 
+                    totalTx: totalTxAccumulated, 
+                    analysis: GLOBAL_MARKET[id].analysis
                 });
 
                 GLOBAL_MARKET[id].ai_prediction = aiResult;
@@ -569,19 +585,30 @@ async function loopRealtime() {
                     else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
 
                     finalizeTournament(id, { 
-                        totalAccumulated, limitAccumulated, limitTx: limitTxAccumulated, totalTx: totalTxAccumulated, historyArr: historyArr 
+                        totalAccumulated, 
+                        limitAccumulated, 
+                        limitTx: limitTxAccumulated, 
+                        totalTx: totalTxAccumulated,
+                        historyArr: historyArr 
                     }, aiResult);
                 }
+
             }); 
+
             GLOBAL_MARKET['_STATS'] = MARKET_VOL_HISTORY;
+
         } 
-    } catch (e) { console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); }
+    } catch (e) { 
+        console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); 
+    }
+    // ĐÃ SỬA: XÓA DÒNG setTimeout Ở ĐÂY LÀ CHÌA KHÓA FIX LỖI SPAM TIMEOUT!
 }
 
-// =======================================================
-// 5. ⚡ ĐỘNG CƠ PHẢN LỰC WEBSOCKET TỪ BINANCE (NEW)
-// =======================================================
+// ==========================================
+// 5. ENGINE: BINANCE WEBSOCKET CLIENT
+// ==========================================
 let binanceWs;
+
 function connectBinanceWS() {
     binanceWs = new WebSocket('wss://nbstream.binance.com/w3w/wsa/stream');
 
@@ -597,13 +624,14 @@ function connectBinanceWS() {
     binanceWs.on('message', (data) => {
         try {
             const msg = JSON.parse(data);
+            
             if (msg.stream === 'came@allTokens@ticker24' && msg.data && msg.data.d) {
                 const tokens = msg.data.d;
                 let hasChanges = false;
-                const deltaUpdates = {};
+                const deltaUpdates = {}; 
                 const currentMinute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
-                
-                // Thuật toán ánh xạ: CA (Contract) -> alphaId
+
+                // Tạo map siêu tốc để ánh xạ CA -> alphaId
                 const caToAlphaId = {};
                 for (const k in GLOBAL_MARKET) {
                     if (GLOBAL_MARKET[k].ca) {
@@ -612,21 +640,19 @@ function connectBinanceWS() {
                 }
 
                 tokens.forEach(t => {
-                    // Binance WS trả về ca dạng: 0x...abc@56. Cần cắt đuôi @56 đi.
-                    const contractStr = t.ca.split('@')[0];
-                    const alphaId = caToAlphaId[contractStr.toLowerCase()];
+                    // Cắt đuôi @56 (ChainID) để match đúng contract address
+                    const contractStr = String(t.ca).split('@')[0].toLowerCase(); 
+                    const alphaId = caToAlphaId[contractStr];
 
                     if (alphaId && GLOBAL_MARKET[alphaId]) {
                         const newPrice = parseFloat(t.p);
                         const newVol24 = parseFloat(t.vol24);
-
-                        // CHỈ BẮN DATA XUỐNG USER NẾU GIÁ/VOL THỰC SỰ THAY ĐỔI
+                        
                         if (GLOBAL_MARKET[alphaId].p !== newPrice || GLOBAL_MARKET[alphaId].r24 !== newVol24) {
                             GLOBAL_MARKET[alphaId].p = newPrice;
-                            GLOBAL_MARKET[alphaId].c = parseFloat(t.pc24);
-                            GLOBAL_MARKET[alphaId].r24 = newVol24;
+                            GLOBAL_MARKET[alphaId].c = parseFloat(t.pc24); 
+                            GLOBAL_MARKET[alphaId].r24 = newVol24; 
                             
-                            // Tự động cắt đuôi Realtime
                             const tailTot = SNAPSHOT_TAIL_TOTAL[alphaId]?.[currentMinute] || 0;
                             if (GLOBAL_MARKET[alphaId].v) {
                                 GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
@@ -639,15 +665,15 @@ function connectBinanceWS() {
                 });
 
                 if (hasChanges) {
-                    io.emit('market_delta_update', deltaUpdates); // Bơm 60FPS xuống Client
+                    io.emit('market_delta_update', deltaUpdates);
                 }
             }
-        } catch (e) { }
+        } catch (e) {}
     });
 
     binanceWs.on('close', () => {
         console.log("🔴 [WS] Mất kết nối Binance. Đang thử lại sau 3s...");
-        setTimeout(connectBinanceWS, 3000);
+        setTimeout(connectBinanceWS, 3000); 
     });
     
     binanceWs.on('error', (err) => {
@@ -715,7 +741,7 @@ app.get('/api/proxy', async (req, res) => {
 });
 
 // =====================================================================
-// 🚀 START SERVER (ĐÃ SỬA THÀNH ĐA LUỒNG)
+// 🚀 START SERVER
 // =====================================================================
 server.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
@@ -727,12 +753,12 @@ server.listen(PORT, async () => {
     await fetch14DaysHistoryBapi(); 
     await syncTailsFromR2();
     
-    // 1. CHẠY VÒI WEBSOCKET TICK-BY-TICK CỦA BINANCE
+    // 1. CHẠY VÒI WEBSOCKET TICK-BY-TICK
     connectBinanceWS();
     
-    // 2. CHẠY PHƯƠNG ÁN DỰ PHÒNG: Gọi lại API REST mỗi 15 giây một lần để đồng bộ lại Data phòng hờ WS sót gói tin. 
-    loopRealtime(); // Mồi 1 cú lần đầu
-    setInterval(loopRealtime, 15 * 1000); 
+    // 2. CHẠY PHƯƠNG ÁN DỰ PHÒNG CỐ ĐỊNH 15 GIÂY 1 LẦN
+    loopRealtime(); 
+    setInterval(loopRealtime, 15000); 
     
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
     setInterval(syncBaseData, 30 * 60 * 1000);   
