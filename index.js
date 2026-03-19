@@ -49,7 +49,24 @@ const s3Client = new S3Client({
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 app.use(cors({ origin: '*' }));
+// =======================================================
+// 🕵️‍♂️ MÁY ĐO BĂNG THÔNG HTTP 
+// =======================================================
+app.use((req, res, next) => {
+    let oldWrite = res.write, oldEnd = res.end, chunks = [];
+    res.write = function (chunk) { chunks.push(chunk); return oldWrite.apply(res, arguments); };
+    res.end = function (chunk) { 
+        if (chunk) chunks.push(chunk);
+        let body = Buffer.concat(chunks.map(c => typeof c === 'string' ? Buffer.from(c) : c));
+        let kb = (body.length / 1024).toFixed(2);
+        // Chỉ in ra những file nặng hơn 50KB để không bị rối log
+        if (kb > 50) console.log(`[CẢNH BÁO HTTP] ${req.method} ${req.url} vừa xả ra: ${kb} KB`);
+        oldEnd.apply(res, arguments);
+    };
+    next();
+});
 
+// --- RAM CACHE ---
 // --- RAM CACHE ---
 let GLOBAL_MARKET = {};      
 let ACTIVE_CONFIG = {};      
@@ -609,6 +626,14 @@ async function loopRealtime() {
 // ==========================================
 // 5. ENGINE: BINANCE WEBSOCKET CLIENT
 // ==========================================
+let wsBytesSent = 0;
+setInterval(() => {
+    if(wsBytesSent > 0) {
+        console.log(`[WEBSOCKET] Băng thông nội bộ xả ra trong 10s qua: ${(wsBytesSent / 1024).toFixed(2)} KB`);
+        wsBytesSent = 0;
+    }
+}, 10000);
+
 let binanceWs;
 
 function connectBinanceWS() {
