@@ -731,7 +731,7 @@ app.get('/api/competition-data', (req, res) => {
 
 app.get('/api/klines', async (req, res) => {
     const { symbol, interval, limit } = req.query;
-    if (!symbol) return res.status(400).json({ error: "Thiếu tham số symbol" });
+    console.log(`\n--- [DEBUG KLINE] Yêu cầu nến cho: ${symbol}, Khung: ${interval} ---`);
 
     let binanceInterval = interval === 'tick' ? '1s' : interval;
     let queryLimit = limit || 300;
@@ -746,53 +746,54 @@ app.get('/api/klines', async (req, res) => {
     let contract = tokenConf?.contract || (globalData?.ca ? globalData.ca.split('@')[0] : null);
     let chainId = tokenConf?.chainId || (globalData?.ca ? globalData.ca.split('@')[1] : null) || 56;
 
-    if (!contract) return res.json([]); // Không có contract thì bỏ qua
+    console.log(`[DEBUG KLINE] Contract: ${contract} | ChainID: ${chainId}`);
 
+    if (!contract) {
+        console.log(`[DEBUG KLINE] ❌ Không tìm thấy Contract cho ${symbol}, trả về mảng rỗng.`);
+        return res.json([]); 
+    }
+
+    let klines = [];
     try {
-        // 1. Ánh xạ ChainID sang Platform
-        let platform = 'bsc';
-        let strChain = String(chainId);
-        if (strChain.includes('8453')) platform = 'base';
-        else if (strChain.includes('501')) platform = 'solana';
-        else if (strChain.includes('1') && !strChain.includes('56')) platform = 'ethereum';
-
-        // 2. Định dạng lại Interval (1m -> 1min)
-        let sintralInterval = binanceInterval;
-        if (['1m', '3m', '5m', '15m', '30m'].includes(binanceInterval)) {
-            sintralInterval = binanceInterval.replace('m', 'min');
+        // Dùng CHÍNH XÁC API mà Python Bot của bạn đang dùng
+        let cleanAddr = contract.toLowerCase();
+        if (String(chainId) === "501" || chainId === "CT_501" || String(chainId) === "784" || chainId === "CT_784") {
+            cleanAddr = contract;
         }
-
-        let dqueryUrl = `https://dquery.sintral.io/u-kline/v1/k-line/candles?address=${contract}&platform=${platform}&interval=${sintralInterval}&limit=${queryLimit}`;
-
-        // 🛑 THUỐC ĐẶC TRỊ LỖI 418: TẠO AXIOS SẠCH ĐỂ THOÁT KHỎI CÁI MẶT NẠ BÊN TRÊN
-        const cleanAxios = axios.create(); 
-
-        const response = await cleanAxios.get(dqueryUrl, {
-            headers: {
-                "Accept-Encoding": "identity",
-                "User-Agent": "binance-web3/1.0 (Skill)" // Header thần thánh từ SKILL.md
-            },
-            timeout: 10000
-        });
         
-        let klines = [];
-        if (response.data && response.data.data) {
-            klines = response.data.data.map(d => ({
-                open: parseFloat(d[0]),
-                high: parseFloat(d[1]),
-                low: parseFloat(d[2]),
-                close: parseFloat(d[3]),
-                volume: parseFloat(d[4]),
-                time: Math.floor(d[5] / 1000)
-            }));
-            // Sắp xếp lại theo thời gian từ cũ đến mới cho chắc ăn
+        let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
+        console.log(`[DEBUG KLINE] URL Binance: ${bapiUrl}`);
+        
+        // Gọi thẳng axios (nó sẽ ăn theo httpsAgent www.binance.com ở đầu file index.js)
+        const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
+        
+        console.log(`[DEBUG KLINE] Mã phản hồi từ Binance: ${response.status}`);
+        
+        if (response.data && response.data.code === "000000" && response.data.data && response.data.data.klineInfos) {
+            const rawKlines = response.data.data.klineInfos;
+            console.log(`[DEBUG KLINE] ✅ Binance trả về ${rawKlines.length} cây nến thô.`);
+            
+            klines = rawKlines.map(k => {
+                if (Array.isArray(k)) {
+                    return { time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]) };
+                } else {
+                    return { time: Math.floor(parseInt(k.timestamp) / 1000), open: parseFloat(k.openPrice), high: parseFloat(k.highPrice), low: parseFloat(k.lowPrice), close: parseFloat(k.closePrice), volume: parseFloat(k.volume) };
+                }
+            });
+            // Sắp xếp thời gian cũ -> mới
             klines.sort((a, b) => a.time - b.time);
+        } else {
+            console.log(`[DEBUG KLINE] ⚠️ Dữ liệu bất thường hoặc rỗng. Raw Data:`, JSON.stringify(response.data).substring(0, 200));
         }
         
+        console.log(`[DEBUG KLINE] 🚀 Bắn ${klines.length} cây nến về cho Frontend vẽ.`);
         res.json(klines);
         
     } catch (error) {
-        console.error("Lỗi API Klines Backend:", error.response ? error.response.status : error.message);
+        console.error("[DEBUG KLINE] ❌ LỖI RỒI:", error.response ? error.response.status : error.message);
+        if (error.response && error.response.data) {
+            console.error("[DEBUG KLINE] Chi tiết Binance chửi:", JSON.stringify(error.response.data).substring(0, 300));
+        }
         res.status(500).json({ error: "Lỗi lấy dữ liệu Klines" });
     }
 });
