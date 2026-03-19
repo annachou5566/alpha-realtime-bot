@@ -621,91 +621,7 @@ async function loopRealtime() {
     }
 }
 
-// ==========================================
-// 5. ENGINE: BINANCE WEBSOCKET CLIENT
-// ==========================================
-let binanceWs;
-// 🛑 THÊM ĐOẠN NÀY: Bộ đệm chống spam websocket
-let PENDING_WS_UPDATES = {};
-setInterval(() => {
-    if (Object.keys(PENDING_WS_UPDATES).length > 0) {
-        io.emit('market_delta_update', PENDING_WS_UPDATES);
-        PENDING_WS_UPDATES = {}; // Gửi xong thì xóa sạch bộ đệm
-    }
-}, 1000); // 1000ms = 1 giây bắn 1 lần (có thể chỉnh lên 1500 nếu muốn tiết kiệm hơn)
 
-function connectBinanceWS() {
-    binanceWs = new WebSocket('wss://nbstream.binance.com/w3w/wsa/stream');
-
-    binanceWs.on('open', () => {
-        console.log("🟢 [WS] Đã kết nối với luồng Binance!");
-        binanceWs.send(JSON.stringify({
-            "method": "SUBSCRIBE",
-            "params": ["came@allTokens@ticker24"],
-            "id": 1
-        }));
-    });
-
-    binanceWs.on('message', (data) => {
-        try {
-            const msg = JSON.parse(data);
-            
-            if (msg.stream === 'came@allTokens@ticker24' && msg.data && msg.data.d) {
-                const tokens = msg.data.d;
-                let hasChanges = false;
-                const deltaUpdates = {}; 
-                const currentMinute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
-
-                const caToAlphaId = {};
-                for (const k in GLOBAL_MARKET) {
-                    if (GLOBAL_MARKET[k].ca) {
-                        caToAlphaId[GLOBAL_MARKET[k].ca.toLowerCase()] = k;
-                    }
-                }
-
-                tokens.forEach(t => {
-                    const contractStr = String(t.ca).split('@')[0].toLowerCase(); 
-                    const alphaId = caToAlphaId[contractStr];
-
-                    if (alphaId && GLOBAL_MARKET[alphaId]) {
-                        const newPrice = parseFloat(t.p);
-                        const newVol24 = parseFloat(t.vol24);
-                        
-                        if (GLOBAL_MARKET[alphaId].p !== newPrice || GLOBAL_MARKET[alphaId].r24 !== newVol24) {
-                            GLOBAL_MARKET[alphaId].p = newPrice;
-                            GLOBAL_MARKET[alphaId].c = parseFloat(t.pc24); 
-                            GLOBAL_MARKET[alphaId].r24 = newVol24; 
-                            
-                            const tailTot = SNAPSHOT_TAIL_TOTAL[alphaId]?.[currentMinute] || 0;
-                            if (GLOBAL_MARKET[alphaId].v) {
-                                GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
-                            }
-
-                            // 🛑 NHỒI DỮ LIỆU VÀO BỘ ĐỆM (Không bắn io.emit ở đây nữa)
-                            PENDING_WS_UPDATES[alphaId] = {
-                                p: GLOBAL_MARKET[alphaId].p,
-                                c: GLOBAL_MARKET[alphaId].c,
-                                r24: GLOBAL_MARKET[alphaId].r24,
-                                v: GLOBAL_MARKET[alphaId].v
-                            };
-                        }
-                    }
-                });
-                
-                // (Đã xóa bỏ hoàn toàn đoạn if (hasChanges) { ... io.emit ... } ở đây)
-            }
-        } catch (e) {}
-    });
-
-    binanceWs.on('close', () => {
-        console.log("🔴 [WS] Mất kết nối Binance. Đang thử lại sau 3s...");
-        setTimeout(connectBinanceWS, 3000); 
-    });
-    
-    binanceWs.on('error', (err) => {
-        console.error("⚠️ [WS] Lỗi kết nối:", err.message);
-    });
-}
 
 // ==========================================
 // 6. API TRẢ DỮ LIỆU CHO FRONTEND
@@ -810,8 +726,7 @@ server.listen(PORT, async () => {
     await fetch14DaysHistoryBapi(); 
     await syncTailsFromR2();
     
-    // 1. CHẠY VÒI WEBSOCKET TICK-BY-TICK
-    connectBinanceWS();
+    
     
     // 2. CHẠY PHƯƠNG ÁN DỰ PHÒNG CỐ ĐỊNH 15 GIÂY 1 LẦN
     loopRealtime(); 
