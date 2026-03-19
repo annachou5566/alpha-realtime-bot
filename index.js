@@ -751,53 +751,40 @@ app.get('/api/klines', async (req, res) => {
     try {
         if (contract) {
             // ========================================================
-            // XỬ LÝ TOKEN DEX DÙNG API CHUẨN DQUERY.SINTRAL.IO
-            // (Được hướng dẫn trong file query-token-info/SKILL.md)
+            // DÙNG CHÍNH API AGG-KLINES CỦA BẠN CHO TOKEN DEX
             // ========================================================
+            let cleanAddr = contract.toLowerCase();
+            if (chainId === 501 || chainId === "CT_501" || chainId === 784 || chainId === "CT_784") cleanAddr = contract;
             
-            // 1. Ánh xạ ChainID sang Platform
-            let platform = 'bsc';
-            let strChain = String(chainId);
-            if (strChain.includes('8453')) platform = 'base';
-            else if (strChain.includes('501')) platform = 'solana';
-            else if (strChain.includes('1') && !strChain.includes('56')) platform = 'ethereum';
-
-            // 2. Ánh xạ Interval (Thêm chữ 'min' cho phút)
-            let sintralInterval = binanceInterval;
-            if (['1m', '3m', '5m', '15m', '30m'].includes(binanceInterval)) {
-                sintralInterval = binanceInterval.replace('m', 'min');
-            }
-
-            let dqueryUrl = `https://dquery.sintral.io/u-kline/v1/k-line/candles?address=${contract}&platform=${platform}&interval=${sintralInterval}&limit=${queryLimit}`;
+            let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
             
-            // 3. Header bắt buộc từ tài liệu
-            const dqueryHeaders = {
-                "Accept-Encoding": "identity",
-                "User-Agent": "binance-web3/1.0 (Skill)"
-            };
-
-            const response = await axios.get(dqueryUrl, { headers: dqueryHeaders, timeout: 10000 });
+            // Vì gọi www.binance.com nên dùng httpsAgent mặc định (dòng 12) là hợp lệ
+            const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
             
-            if (response.data && response.data.data) {
-                // 4. Bóc tách mảng [open, high, low, close, volume, timestamp, count]
-                klines = response.data.data.map(d => ({
-                    open: parseFloat(d[0]),
-                    high: parseFloat(d[1]),
-                    low: parseFloat(d[2]),
-                    close: parseFloat(d[3]),
-                    volume: parseFloat(d[4]),
-                    time: Math.floor(d[5] / 1000)
-                }));
+            if (response.data && response.data.data && response.data.data.klineInfos) {
+                klines = response.data.data.klineInfos.map(k => {
+                    // Xử lý chung cho cả cấu trúc mảng và Object
+                    if (Array.isArray(k)) {
+                        return { time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]) };
+                    } else {
+                        return { time: Math.floor(parseInt(k.timestamp) / 1000), open: parseFloat(k.openPrice), high: parseFloat(k.highPrice), low: parseFloat(k.lowPrice), close: parseFloat(k.closePrice), volume: parseFloat(k.volume) };
+                    }
+                });
             }
         } else {
             // ========================================================
-            // XỬ LÝ TOKEN SPOT
+            // XỬ LÝ TOKEN SPOT (KHẮC PHỤC LỖI 418)
             // ========================================================
             let sym = symbol.toUpperCase().replace('ALPHA_', '');
             if (!sym.endsWith('USDT')) sym += 'USDT';
             
             const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${binanceInterval}&limit=${queryLimit}`;
-            const response = await axios.get(spotUrl, { timeout: 10000 });
+            
+            // 🛑 CHÌA KHÓA FIX 418: Ghi đè httpsAgent bằng agent trắng, không dùng cái mặc định của www.binance.com nữa
+            const response = await axios.get(spotUrl, { 
+                timeout: 10000,
+                httpsAgent: new https.Agent() 
+            });
             
             klines = response.data.map(d => ({ 
                 time: Math.floor(parseInt(d[0]) / 1000), 
