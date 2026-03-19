@@ -729,14 +729,56 @@ app.get('/api/competition-data', (req, res) => {
     res.json(responseData);
 });
 
-app.get('/api/proxy', async (req, res) => {
-    const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).json({ error: "Thiếu tham số url" });
+app.get('/api/klines', async (req, res) => {
+    const { symbol, interval, limit } = req.query;
+    if (!symbol) return res.status(400).json({ error: "Thiếu tham số symbol" });
+
+    let binanceInterval = interval === 'tick' ? '1s' : interval;
+    let queryLimit = limit || 300;
+    
+    // 1. Nhận diện Token từ bộ nhớ RAM của Bot
+    let tokenKey = symbol.toUpperCase().replace('ALPHA_', '').replace('USDT', '');
+    let alphaId = 'ALPHA_' + tokenKey;
+    
+    let tokenConf = ACTIVE_CONFIG[alphaId] || ACTIVE_CONFIG[symbol];
+    let globalData = GLOBAL_MARKET[alphaId] || GLOBAL_MARKET[symbol];
+    
+    let chainId = tokenConf ? tokenConf.chainId : (globalData && globalData.ca ? parseInt(globalData.ca.split('@')[1] || '56') : 56);
+    let contract = tokenConf ? tokenConf.contract : (globalData && globalData.ca ? globalData.ca.split('@')[0] : null);
+
+    let klines = [];
+
     try {
-        const response = await axios.get(targetUrl, { headers: FAKE_HEADERS, timeout: 10000 });
-        res.json(response.data);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
+        if (contract && chainId) {
+            // --- XỬ LÝ TOKEN DEX (W3W) ---
+            let cleanAddr = contract.toLowerCase();
+            if (chainId === 501 || chainId === "CT_501" || chainId === 784 || chainId === "CT_784") cleanAddr = contract;
+            
+            let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
+            
+            const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
+            if (response.data?.code === "000000" && response.data?.data?.klineInfos) {
+                klines = response.data.data.klineInfos.map(k => {
+                    // Xử lý chung cho cả mảng và Object, Volume mặc định đã là USD
+                    if (Array.isArray(k)) {
+                        return { time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]) };
+                    } else {
+                        return { time: Math.floor(parseInt(k.timestamp) / 1000), open: parseFloat(k.openPrice), high: parseFloat(k.highPrice), low: parseFloat(k.lowPrice), close: parseFloat(k.closePrice), volume: parseFloat(k.volume) };
+                    }
+                });
+            }
+        } else {
+            // --- XỬ LÝ TOKEN SPOT ---
+            let sym = symbol.toUpperCase().replace('ALPHA_', '');
+            if (!sym.endsWith('USDT')) sym += 'USDT';
+            const spotUrl = `https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=${binanceInterval}&limit=${queryLimit}`;
+            const response = await axios.get(spotUrl, { timeout: 10000 });
+            klines = response.data.map(d => ({ time: Math.floor(parseInt(d[0]) / 1000), open: parseFloat(d[1]), high: parseFloat(d[2]), low: parseFloat(d[3]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
+        }
+        res.json(klines);
+    } catch (error) {
+        console.error("Lỗi API Klines Backend:", error.message);
+        res.status(500).json({ error: "Lỗi lấy dữ liệu" });
     }
 });
 
