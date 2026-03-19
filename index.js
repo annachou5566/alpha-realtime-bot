@@ -604,9 +604,22 @@ async function loopRealtime() {
 }
 
 // ==========================================
-// 5. ENGINE: BINANCE WEBSOCKET CLIENT
+// 5. ENGINE: BINANCE WEBSOCKET CLIENT (TỐI ƯU & ĐO LƯỜNG)
 // ==========================================
+
+// --- MÁY ĐO BĂNG THÔNG WS ---
+let wsBytesSent = 0;
+setInterval(() => {
+    if(wsBytesSent > 0) {
+        console.log(`[WEBSOCKET] Băng thông xả ra trong 10s qua: ${(wsBytesSent / 1024).toFixed(2)} KB (Gửi tới ${io.engine.clientsCount} users online)`);
+        wsBytesSent = 0;
+    }
+}, 10000);
+// -----------------------------
+
 let binanceWs;
+let pendingDeltaUpdates = {}; // Giỏ chứa tạm
+let lastEmitTime = 0;         // Bộ đếm thời gian xả
 
 function connectBinanceWS() {
     binanceWs = new WebSocket('wss://nbstream.binance.com/w3w/wsa/stream');
@@ -626,8 +639,6 @@ function connectBinanceWS() {
             
             if (msg.stream === 'came@allTokens@ticker24' && msg.data && msg.data.d) {
                 const tokens = msg.data.d;
-                let hasChanges = false;
-                const deltaUpdates = {}; 
                 const currentMinute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
 
                 const caToAlphaId = {};
@@ -637,6 +648,7 @@ function connectBinanceWS() {
                     }
                 }
 
+                // 1. Gom dữ liệu vào giỏ tạm (pendingDeltaUpdates)
                 tokens.forEach(t => {
                     const contractStr = String(t.ca).split('@')[0].toLowerCase(); 
                     const alphaId = caToAlphaId[contractStr];
@@ -655,21 +667,28 @@ function connectBinanceWS() {
                                 GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
                             }
 
-                            // 🛑 CHỈ GỬI NHỮNG SỐ LIỆU CẦN THIẾT (ÉP BĂNG THÔNG XUỐNG MỨC SIÊU NHỎ)
-                            deltaUpdates[alphaId] = {
+                            // Cập nhật vào giỏ chứa thay vì gửi ngay lập tức
+                            pendingDeltaUpdates[alphaId] = {
                                 p: GLOBAL_MARKET[alphaId].p,
                                 c: GLOBAL_MARKET[alphaId].c,
                                 r24: GLOBAL_MARKET[alphaId].r24,
                                 v: GLOBAL_MARKET[alphaId].v
                             };
-                            
-                            hasChanges = true;
                         }
                     }
                 });
 
-                if (hasChanges) {
-                    io.emit('market_delta_update', deltaUpdates);
+                // 2. CHỈ XẢ GIỎ CỨ MỖI 2 GIÂY 1 LẦN (TIẾT KIỆM 90% BĂNG THÔNG)
+                if (Object.keys(pendingDeltaUpdates).length > 0 && Date.now() - lastEmitTime >= 2000) {
+                    io.emit('market_delta_update', pendingDeltaUpdates);
+                    
+                    // Ghi nhận dung lượng xả ra để báo cáo lên Log
+                    const payloadSize = Buffer.byteLength(JSON.stringify(pendingDeltaUpdates));
+                    wsBytesSent += payloadSize * io.engine.clientsCount;
+
+                    // Làm sạch giỏ và reset thời gian
+                    pendingDeltaUpdates = {};
+                    lastEmitTime = Date.now();
                 }
             }
         } catch (e) {}
