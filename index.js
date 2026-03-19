@@ -730,50 +730,35 @@ app.get('/api/competition-data', (req, res) => {
 });
 
 app.get('/api/klines', async (req, res) => {
-    const { symbol, interval, limit } = req.query;
-    console.log(`\n--- [DEBUG KLINE] Yêu cầu nến cho: ${symbol}, Khung: ${interval} ---`);
+    // Nhận thẳng Contract từ Web gửi lên, khỏi cần mò mẫm trong RAM
+    const { contract, chainId, interval, limit } = req.query;
 
     let binanceInterval = interval === 'tick' ? '1s' : interval;
     let queryLimit = limit || 300;
-    
-    // Nhận diện Token từ bộ nhớ RAM
-    let tokenKey = symbol.toUpperCase().replace('ALPHA_', '').replace('USDT', '');
-    let alphaId = 'ALPHA_' + tokenKey;
-    
-    let tokenConf = ACTIVE_CONFIG[alphaId] || ACTIVE_CONFIG[symbol];
-    let globalData = GLOBAL_MARKET[alphaId] || GLOBAL_MARKET[symbol];
-    
-    let contract = tokenConf?.contract || (globalData?.ca ? globalData.ca.split('@')[0] : null);
-    let chainId = tokenConf?.chainId || (globalData?.ca ? globalData.ca.split('@')[1] : null) || 56;
 
-    console.log(`[DEBUG KLINE] Contract: ${contract} | ChainID: ${chainId}`);
-
-    if (!contract) {
-        console.log(`[DEBUG KLINE] ❌ Không tìm thấy Contract cho ${symbol}, trả về mảng rỗng.`);
+    // Nếu Web không gửi Contract lên thì chịu
+    if (!contract || contract === 'undefined' || contract === 'null') {
         return res.json([]); 
     }
 
     let klines = [];
     try {
-        // Dùng CHÍNH XÁC API mà Python Bot của bạn đang dùng
         let cleanAddr = contract.toLowerCase();
-        if (String(chainId) === "501" || chainId === "CT_501" || String(chainId) === "784" || chainId === "CT_784") {
+        let cid = chainId || 56;
+        
+        // Solana (501) và Tron (784) phân biệt chữ hoa/thường nên giữ nguyên
+        if (String(cid) === "501" || cid === "CT_501" || String(cid) === "784" || cid === "CT_784") {
             cleanAddr = contract;
         }
         
-        let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
-        console.log(`[DEBUG KLINE] URL Binance: ${bapiUrl}`);
+        // URL Binance chuẩn chỉnh không bao giờ chết
+        let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${cid}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
         
-        // Gọi thẳng axios (nó sẽ ăn theo httpsAgent www.binance.com ở đầu file index.js)
+        // Gọi Binance
         const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
         
-        console.log(`[DEBUG KLINE] Mã phản hồi từ Binance: ${response.status}`);
-        
         if (response.data && response.data.code === "000000" && response.data.data && response.data.data.klineInfos) {
-            const rawKlines = response.data.data.klineInfos;
-            console.log(`[DEBUG KLINE] ✅ Binance trả về ${rawKlines.length} cây nến thô.`);
-            
-            klines = rawKlines.map(k => {
+            klines = response.data.data.klineInfos.map(k => {
                 if (Array.isArray(k)) {
                     return { time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]) };
                 } else {
@@ -782,19 +767,13 @@ app.get('/api/klines', async (req, res) => {
             });
             // Sắp xếp thời gian cũ -> mới
             klines.sort((a, b) => a.time - b.time);
-        } else {
-            console.log(`[DEBUG KLINE] ⚠️ Dữ liệu bất thường hoặc rỗng. Raw Data:`, JSON.stringify(response.data).substring(0, 200));
         }
         
-        console.log(`[DEBUG KLINE] 🚀 Bắn ${klines.length} cây nến về cho Frontend vẽ.`);
         res.json(klines);
         
     } catch (error) {
-        console.error("[DEBUG KLINE] ❌ LỖI RỒI:", error.response ? error.response.status : error.message);
-        if (error.response && error.response.data) {
-            console.error("[DEBUG KLINE] Chi tiết Binance chửi:", JSON.stringify(error.response.data).substring(0, 300));
-        }
-        res.status(500).json({ error: "Lỗi lấy dữ liệu Klines" });
+        console.error("Lỗi lấy nến:", error.message);
+        res.status(500).json({ error: "Lỗi lấy dữ liệu" });
     }
 });
 
