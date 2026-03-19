@@ -736,7 +736,7 @@ app.get('/api/klines', async (req, res) => {
     let binanceInterval = interval === 'tick' ? '1s' : interval;
     let queryLimit = limit || 300;
     
-    // Nhận diện Token từ bộ nhớ RAM
+    // Nhận diện Token Alpha từ bộ nhớ RAM
     let tokenKey = symbol.toUpperCase().replace('ALPHA_', '').replace('USDT', '');
     let alphaId = 'ALPHA_' + tokenKey;
     
@@ -746,54 +746,33 @@ app.get('/api/klines', async (req, res) => {
     let contract = tokenConf?.contract || (globalData?.ca ? globalData.ca.split('@')[0] : null);
     let chainId = tokenConf?.chainId || (globalData?.ca ? globalData.ca.split('@')[1] : null) || 56;
 
+    // Nếu không có Contract thì không phải token Alpha/DEX -> Bỏ qua luôn
+    if (!contract) {
+        return res.json([]); 
+    }
+
     let klines = [];
 
     try {
-        if (contract) {
-            // ========================================================
-            // DÙNG CHÍNH API AGG-KLINES CỦA BẠN CHO TOKEN DEX
-            // ========================================================
-            let cleanAddr = contract.toLowerCase();
-            if (chainId === 501 || chainId === "CT_501" || chainId === 784 || chainId === "CT_784") cleanAddr = contract;
-            
-            let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
-            
-            // Vì gọi www.binance.com nên dùng httpsAgent mặc định (dòng 12) là hợp lệ
-            const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
-            
-            if (response.data && response.data.data && response.data.data.klineInfos) {
-                klines = response.data.data.klineInfos.map(k => {
-                    // Xử lý chung cho cả cấu trúc mảng và Object
-                    if (Array.isArray(k)) {
-                        return { time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]) };
-                    } else {
-                        return { time: Math.floor(parseInt(k.timestamp) / 1000), open: parseFloat(k.openPrice), high: parseFloat(k.highPrice), low: parseFloat(k.lowPrice), close: parseFloat(k.closePrice), volume: parseFloat(k.volume) };
-                    }
-                });
-            }
-        } else {
-            // ========================================================
-            // XỬ LÝ TOKEN SPOT (KHẮC PHỤC LỖI 418)
-            // ========================================================
-            let sym = symbol.toUpperCase().replace('ALPHA_', '');
-            if (!sym.endsWith('USDT')) sym += 'USDT';
-            
-            const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${binanceInterval}&limit=${queryLimit}`;
-            
-            // 🛑 CHÌA KHÓA FIX 418: Ghi đè httpsAgent bằng agent trắng, không dùng cái mặc định của www.binance.com nữa
-            const response = await axios.get(spotUrl, { 
-                timeout: 10000,
-                httpsAgent: new https.Agent() 
+        // ========================================================
+        // 100% CHỈ DÙNG API AGG-KLINES CHO TOKEN DEX/ALPHA
+        // ========================================================
+        let cleanAddr = contract.toLowerCase();
+        if (chainId === 501 || chainId === "CT_501" || chainId === 784 || chainId === "CT_784") cleanAddr = contract;
+        
+        let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
+        
+        // Gọi thẳng bằng axios đã cấu hình httpsAgent: 'www.binance.com' trên đầu file
+        const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
+        
+        if (response.data && response.data.data && response.data.data.klineInfos) {
+            klines = response.data.data.klineInfos.map(k => {
+                if (Array.isArray(k)) {
+                    return { time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]) };
+                } else {
+                    return { time: Math.floor(parseInt(k.timestamp) / 1000), open: parseFloat(k.openPrice), high: parseFloat(k.highPrice), low: parseFloat(k.lowPrice), close: parseFloat(k.closePrice), volume: parseFloat(k.volume) };
+                }
             });
-            
-            klines = response.data.map(d => ({ 
-                time: Math.floor(parseInt(d[0]) / 1000), 
-                open: parseFloat(d[1]), 
-                high: parseFloat(d[2]), 
-                low: parseFloat(d[3]), 
-                close: parseFloat(d[4]), 
-                volume: parseFloat(d[5]) 
-            }));
         }
         
         res.json(klines);
