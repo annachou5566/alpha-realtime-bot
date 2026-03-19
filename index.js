@@ -16,9 +16,12 @@ axios.defaults.httpsAgent = new https.Agent({
 });
 
 const app = express();
-// 🛑 CHỖ VÁ LỖI: ÉP NẾN DỮ LIỆU HTTP GIẢM TỪ 1MB XUỐNG CÒN 100KB
+
+// 🛑 NÉN DỮ LIỆU HTTP: GIẢM BĂNG THÔNG API TỪ 1MB XUỐNG 100KB
+// LƯU Ý: Phải chạy lệnh "npm install compression" trên Render nhé!
 const compression = require('compression');
 app.use(compression());
+
 // ⚡ KHỞI TẠO SOCKET.IO ĐÈ LÊN EXPRESS
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
@@ -29,9 +32,6 @@ const FAKE_HEADERS = {
     "client-type": "web"
 };
 
-// =====================================================================
-// 🎯 KHU VỰC 1: API CHUẨN
-// =====================================================================
 const API_ENDPOINTS = {
     BULK_TOTAL: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=aggregate",
     BULK_LIMIT: "https://www.binance.com/bapi/defi/v1/public/alpha-trade/aggTicker24?dataType=limit",
@@ -49,24 +49,7 @@ const s3Client = new S3Client({
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 app.use(cors({ origin: '*' }));
-// =======================================================
-// 🕵️‍♂️ MÁY ĐO BĂNG THÔNG HTTP 
-// =======================================================
-app.use((req, res, next) => {
-    let oldWrite = res.write, oldEnd = res.end, chunks = [];
-    res.write = function (chunk) { chunks.push(chunk); return oldWrite.apply(res, arguments); };
-    res.end = function (chunk) { 
-        if (chunk) chunks.push(chunk);
-        let body = Buffer.concat(chunks.map(c => typeof c === 'string' ? Buffer.from(c) : c));
-        let kb = (body.length / 1024).toFixed(2);
-        // Chỉ in ra những file nặng hơn 50KB để không bị rối log
-        if (kb > 50) console.log(`[CẢNH BÁO HTTP] ${req.method} ${req.url} vừa xả ra: ${kb} KB`);
-        oldEnd.apply(res, arguments);
-    };
-    next();
-});
 
-// --- RAM CACHE ---
 // --- RAM CACHE ---
 let GLOBAL_MARKET = {};      
 let ACTIVE_CONFIG = {};      
@@ -450,7 +433,6 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 // ==========================================
 async function loopRealtime() {
     try {
-        // ĐÃ SỬA: Tăng timeout lên 10 giây để chống nghẽn
         const [resTot, resLim] = await Promise.all([
             axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 10000 }),
             axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 10000 })
@@ -503,7 +485,6 @@ async function loopRealtime() {
                     };
                 }
 
-                // ĐÃ SỬA: Cập nhật biến ca để hứng WS
                 GLOBAL_MARKET[id] = {
                     ca: t.contractAddress,
                     p: currentPrice,
@@ -620,20 +601,11 @@ async function loopRealtime() {
     } catch (e) { 
         console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); 
     }
-    // ĐÃ SỬA: XÓA DÒNG setTimeout Ở ĐÂY LÀ CHÌA KHÓA FIX LỖI SPAM TIMEOUT!
 }
 
 // ==========================================
 // 5. ENGINE: BINANCE WEBSOCKET CLIENT
 // ==========================================
-let wsBytesSent = 0;
-setInterval(() => {
-    if(wsBytesSent > 0) {
-        console.log(`[WEBSOCKET] Băng thông nội bộ xả ra trong 10s qua: ${(wsBytesSent / 1024).toFixed(2)} KB`);
-        wsBytesSent = 0;
-    }
-}, 10000);
-
 let binanceWs;
 
 function connectBinanceWS() {
@@ -658,7 +630,6 @@ function connectBinanceWS() {
                 const deltaUpdates = {}; 
                 const currentMinute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
 
-                // Tạo map siêu tốc để ánh xạ CA -> alphaId
                 const caToAlphaId = {};
                 for (const k in GLOBAL_MARKET) {
                     if (GLOBAL_MARKET[k].ca) {
@@ -667,7 +638,6 @@ function connectBinanceWS() {
                 }
 
                 tokens.forEach(t => {
-                    // Cắt đuôi @56 (ChainID) để match đúng contract address
                     const contractStr = String(t.ca).split('@')[0].toLowerCase(); 
                     const alphaId = caToAlphaId[contractStr];
 
@@ -685,7 +655,7 @@ function connectBinanceWS() {
                                 GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
                             }
 
-                            // 🛑 CHỖ VÁ LỖI: CHỈ ĐÓNG GÓI NHỮNG SỐ LIỆU SIÊU NHẸ ĐỂ GỬI ĐI
+                            // 🛑 CHỈ GỬI NHỮNG SỐ LIỆU CẦN THIẾT (ÉP BĂNG THÔNG XUỐNG MỨC SIÊU NHỎ)
                             deltaUpdates[alphaId] = {
                                 p: GLOBAL_MARKET[alphaId].p,
                                 c: GLOBAL_MARKET[alphaId].c,
@@ -764,13 +734,11 @@ app.get('/api/competition-data', (req, res) => {
 });
 
 app.get('/api/klines', async (req, res) => {
-    // Nhận thẳng Contract từ Web gửi lên, khỏi cần mò mẫm trong RAM
     const { contract, chainId, interval, limit } = req.query;
 
     let binanceInterval = interval === 'tick' ? '1s' : interval;
     let queryLimit = limit || 300;
 
-    // Nếu Web không gửi Contract lên thì chịu
     if (!contract || contract === 'undefined' || contract === 'null') {
         return res.json([]); 
     }
@@ -780,15 +748,12 @@ app.get('/api/klines', async (req, res) => {
         let cleanAddr = contract.toLowerCase();
         let cid = chainId || 56;
         
-        // Solana (501) và Tron (784) phân biệt chữ hoa/thường nên giữ nguyên
         if (String(cid) === "501" || cid === "CT_501" || String(cid) === "784" || cid === "CT_784") {
             cleanAddr = contract;
         }
         
-        // URL Binance chuẩn chỉnh không bao giờ chết
         let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${cid}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
         
-        // Gọi Binance
         const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
         
         if (response.data && response.data.code === "000000" && response.data.data && response.data.data.klineInfos) {
@@ -799,7 +764,6 @@ app.get('/api/klines', async (req, res) => {
                     return { time: Math.floor(parseInt(k.timestamp) / 1000), open: parseFloat(k.openPrice), high: parseFloat(k.highPrice), low: parseFloat(k.lowPrice), close: parseFloat(k.closePrice), volume: parseFloat(k.volume) };
                 }
             });
-            // Sắp xếp thời gian cũ -> mới
             klines.sort((a, b) => a.time - b.time);
         }
         
