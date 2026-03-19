@@ -16,7 +16,9 @@ axios.defaults.httpsAgent = new https.Agent({
 });
 
 const app = express();
-
+// 🛑 CHỖ VÁ LỖI: ÉP NẾN DỮ LIỆU HTTP GIẢM TỪ 1MB XUỐNG CÒN 100KB
+const compression = require('compression');
+app.use(compression());
 // ⚡ KHỞI TẠO SOCKET.IO ĐÈ LÊN EXPRESS
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
@@ -658,7 +660,14 @@ function connectBinanceWS() {
                                 GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
                             }
 
-                            deltaUpdates[alphaId] = GLOBAL_MARKET[alphaId];
+                            // 🛑 CHỖ VÁ LỖI: CHỈ ĐÓNG GÓI NHỮNG SỐ LIỆU SIÊU NHẸ ĐỂ GỬI ĐI
+                            deltaUpdates[alphaId] = {
+                                p: GLOBAL_MARKET[alphaId].p,
+                                c: GLOBAL_MARKET[alphaId].c,
+                                r24: GLOBAL_MARKET[alphaId].r24,
+                                v: GLOBAL_MARKET[alphaId].v
+                            };
+                            
                             hasChanges = true;
                         }
                     }
