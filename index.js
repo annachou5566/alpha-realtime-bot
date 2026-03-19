@@ -736,7 +736,7 @@ app.get('/api/klines', async (req, res) => {
     let binanceInterval = interval === 'tick' ? '1s' : interval;
     let queryLimit = limit || 300;
     
-    // Nhận diện Token Alpha từ bộ nhớ RAM
+    // Nhận diện Token từ bộ nhớ RAM
     let tokenKey = symbol.toUpperCase().replace('ALPHA_', '').replace('USDT', '');
     let alphaId = 'ALPHA_' + tokenKey;
     
@@ -746,33 +746,47 @@ app.get('/api/klines', async (req, res) => {
     let contract = tokenConf?.contract || (globalData?.ca ? globalData.ca.split('@')[0] : null);
     let chainId = tokenConf?.chainId || (globalData?.ca ? globalData.ca.split('@')[1] : null) || 56;
 
-    // Nếu không có Contract thì không phải token Alpha/DEX -> Bỏ qua luôn
-    if (!contract) {
-        return res.json([]); 
-    }
-
-    let klines = [];
+    if (!contract) return res.json([]); // Không có contract thì bỏ qua
 
     try {
-        // ========================================================
-        // 100% CHỈ DÙNG API AGG-KLINES CHO TOKEN DEX/ALPHA
-        // ========================================================
-        let cleanAddr = contract.toLowerCase();
-        if (chainId === 501 || chainId === "CT_501" || chainId === 784 || chainId === "CT_784") cleanAddr = contract;
+        // 1. Ánh xạ ChainID sang Platform
+        let platform = 'bsc';
+        let strChain = String(chainId);
+        if (strChain.includes('8453')) platform = 'base';
+        else if (strChain.includes('501')) platform = 'solana';
+        else if (strChain.includes('1') && !strChain.includes('56')) platform = 'ethereum';
+
+        // 2. Định dạng lại Interval (1m -> 1min)
+        let sintralInterval = binanceInterval;
+        if (['1m', '3m', '5m', '15m', '30m'].includes(binanceInterval)) {
+            sintralInterval = binanceInterval.replace('m', 'min');
+        }
+
+        let dqueryUrl = `https://dquery.sintral.io/u-kline/v1/k-line/candles?address=${contract}&platform=${platform}&interval=${sintralInterval}&limit=${queryLimit}`;
+
+        // 🛑 THUỐC ĐẶC TRỊ LỖI 418: TẠO AXIOS SẠCH ĐỂ THOÁT KHỎI CÁI MẶT NẠ BÊN TRÊN
+        const cleanAxios = axios.create(); 
+
+        const response = await cleanAxios.get(dqueryUrl, {
+            headers: {
+                "Accept-Encoding": "identity",
+                "User-Agent": "binance-web3/1.0 (Skill)" // Header thần thánh từ SKILL.md
+            },
+            timeout: 10000
+        });
         
-        let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${chainId}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
-        
-        // Gọi thẳng bằng axios đã cấu hình httpsAgent: 'www.binance.com' trên đầu file
-        const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
-        
-        if (response.data && response.data.data && response.data.data.klineInfos) {
-            klines = response.data.data.klineInfos.map(k => {
-                if (Array.isArray(k)) {
-                    return { time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]) };
-                } else {
-                    return { time: Math.floor(parseInt(k.timestamp) / 1000), open: parseFloat(k.openPrice), high: parseFloat(k.highPrice), low: parseFloat(k.lowPrice), close: parseFloat(k.closePrice), volume: parseFloat(k.volume) };
-                }
-            });
+        let klines = [];
+        if (response.data && response.data.data) {
+            klines = response.data.data.map(d => ({
+                open: parseFloat(d[0]),
+                high: parseFloat(d[1]),
+                low: parseFloat(d[2]),
+                close: parseFloat(d[3]),
+                volume: parseFloat(d[4]),
+                time: Math.floor(d[5] / 1000)
+            }));
+            // Sắp xếp lại theo thời gian từ cũ đến mới cho chắc ăn
+            klines.sort((a, b) => a.time - b.time);
         }
         
         res.json(klines);
