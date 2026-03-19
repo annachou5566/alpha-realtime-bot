@@ -625,6 +625,14 @@ async function loopRealtime() {
 // 5. ENGINE: BINANCE WEBSOCKET CLIENT
 // ==========================================
 let binanceWs;
+// 🛑 THÊM ĐOẠN NÀY: Bộ đệm chống spam websocket
+let PENDING_WS_UPDATES = {};
+setInterval(() => {
+    if (Object.keys(PENDING_WS_UPDATES).length > 0) {
+        io.emit('market_delta_update', PENDING_WS_UPDATES);
+        PENDING_WS_UPDATES = {}; // Gửi xong thì xóa sạch bộ đệm
+    }
+}, 1000); // 1000ms = 1 giây bắn 1 lần (có thể chỉnh lên 1500 nếu muốn tiết kiệm hơn)
 
 function connectBinanceWS() {
     binanceWs = new WebSocket('wss://nbstream.binance.com/w3w/wsa/stream');
@@ -673,36 +681,18 @@ function connectBinanceWS() {
                                 GLOBAL_MARKET[alphaId].v.dt = Math.max(0, newVol24 - tailTot);
                             }
 
-                            // 🛑 CHỈ GỬI NHỮNG SỐ LIỆU CẦN THIẾT (ÉP BĂNG THÔNG XUỐNG MỨC SIÊU NHỎ)
-                            deltaUpdates[alphaId] = {
+                            // 🛑 NHỒI DỮ LIỆU VÀO BỘ ĐỆM (Không bắn io.emit ở đây nữa)
+                            PENDING_WS_UPDATES[alphaId] = {
                                 p: GLOBAL_MARKET[alphaId].p,
                                 c: GLOBAL_MARKET[alphaId].c,
                                 r24: GLOBAL_MARKET[alphaId].r24,
                                 v: GLOBAL_MARKET[alphaId].v
                             };
-                            
-                            hasChanges = true;
                         }
                     }
                 });
-
-                if (hasChanges) {
-                    // 🔍 TOOL CHẨN ĐOÁN BĂNG THÔNG WEBSOCKET
-                    const payloadString = JSON.stringify(deltaUpdates);
-                    const bytesPerClient = Buffer.byteLength(payloadString, 'utf8');
-                    
-                    // Lấy số lượng client đang kết nối Socket.io hiện tại
-                    const connectedClients = io.engine.clientsCount;
-                    const totalBytesSent = bytesPerClient * connectedClients;
-                    
-                    // In ra console nếu tổng data gửi đi lớn hơn 1KB để tránh spam log liên tục
-                    if (totalBytesSent > 1024) {
-                        console.log(`[WS MONITOR] Phát sự kiện 'market_delta_update' tới ${connectedClients} clients. Tổng tiêu thụ: ${(totalBytesSent / 1024).toFixed(2)} KB / lần bắn.`);
-                    }
-
-                    // Vẫn giữ nguyên logic gửi dữ liệu đi
-                    io.emit('market_delta_update', deltaUpdates);
-                }
+                
+                // (Đã xóa bỏ hoàn toàn đoạn if (hasChanges) { ... io.emit ... } ở đây)
             }
         } catch (e) {}
     });
