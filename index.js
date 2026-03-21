@@ -712,7 +712,47 @@ app.get('/api/klines', async (req, res) => {
         res.status(500).json({ error: "Lỗi lấy dữ liệu" });
     }
 });
+// =======================================================
+// 🛡️ API SMART MONEY (TÍCH HỢP RAM CACHE 60s CHỐNG QUÁ TẢI RENDER)
+// =======================================================
+const SMART_MONEY_CACHE = {}; 
 
+app.get('/api/smart-money', async (req, res) => {
+    const { contractAddress, chainId } = req.query;
+    
+    if (!contractAddress || contractAddress === 'undefined') {
+        return res.json({ success: false, message: "Thiếu contract" });
+    }
+
+    let cid = chainId || 56;
+    let cleanAddr = contractAddress.toLowerCase();
+    
+    if (String(cid) === "501" || cid === "CT_501" || String(cid) === "784" || cid === "CT_784") {
+        cleanAddr = contractAddress; 
+    }
+
+    let cacheKey = `${cid}_${cleanAddr}`;
+    let nowTs = Date.now();
+
+    if (SMART_MONEY_CACHE[cacheKey] && (nowTs - SMART_MONEY_CACHE[cacheKey].ts < 60000)) {
+        return res.json(SMART_MONEY_CACHE[cacheKey].data);
+    }
+
+    try {
+        let bapiUrl = `https://web3.binance.com/bapi/defi/v4/public/wallet-direct/buw/wallet/market/token/dynamic/info?chainId=${cid}&contractAddress=${cleanAddr}`;
+        const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 8000 });
+
+        if (response.data && response.data.success) {
+            SMART_MONEY_CACHE[cacheKey] = { ts: nowTs, data: response.data };
+            return res.json(response.data);
+        } else {
+            return res.json(response.data || { success: false });
+        }
+    } catch (error) {
+        console.error(`[API LỖI] Lấy Smart Money thất bại: ${cleanAddr} |`, error.message);
+        res.status(500).json({ success: false, message: "Binance từ chối kết nối" });
+    }
+});
 // =====================================================================
 // 🚀 START SERVER
 // =====================================================================
