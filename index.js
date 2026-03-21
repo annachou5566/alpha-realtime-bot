@@ -21,25 +21,7 @@ const app = express();
 // LƯU Ý: Phải chạy lệnh "npm install compression" trên Render nhé!
 const compression = require('compression');
 app.use(compression());
-// ==========================================
-// 🔍 TOOL CHẨN ĐOÁN BĂNG THÔNG HTTP
-// ==========================================
-app.use((req, res, next) => {
-    // Chỉ track các API do mình viết
-    if (req.url.startsWith('/api/')) {
-        const start = Date.now();
-        res.on('finish', () => {
-            // Lấy kích thước byte THỰC TẾ sau khi đã nén (compression)
-            const bytesSent = res.get('Content-Length') || 0;
-            const duration = Date.now() - start;
-            const kbSent = (bytesSent / 1024).toFixed(2);
-            
-            // In ra console (Log Render)
-            console.log(`[HTTP MONITOR] ${req.method} ${req.url} | Đã gửi: ${kbSent} KB | Thời gian: ${duration}ms`);
-        });
-    }
-    next();
-});
+
 // ⚡ KHỞI TẠO SOCKET.IO ĐÈ LÊN EXPRESS
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
