@@ -695,33 +695,35 @@ app.get('/api/klines', async (req, res) => {
     }
 });
 // =======================================================
-// 🛡️ API SMART MONEY - TOOL CHẨN ĐOÁN LỖI CLOUDFLARE/BINANCE
+// 🛡️ API SMART MONEY (TÀNG HÌNH + RAM CACHE 60s CHỐNG QUÁ TẢI)
 // =======================================================
+const SMART_MONEY_CACHE = {}; 
+
 app.get('/api/smart-money', async (req, res) => {
     const { contractAddress, chainId } = req.query;
     
-    console.log(`\n======================================================`);
-    console.log(`🕵️ [DEBUG SMART MONEY] Bắt đầu gọi dữ liệu...`);
-    console.log(`👉 Contract: ${contractAddress} | Chain: ${chainId}`);
-    
     if (!contractAddress || contractAddress === 'undefined') {
-        console.log(`❌ LỖI: Thiếu contract address!`);
         return res.json({ success: false, message: "Thiếu contract" });
     }
 
     let cid = chainId || 56;
     let cleanAddr = contractAddress.toLowerCase();
     
-    // Xử lý địa chỉ cho các chain non-EVM
     if (String(cid) === "501" || cid === "CT_501" || String(cid) === "784" || cid === "CT_784") {
         cleanAddr = contractAddress; 
     }
 
+    let cacheKey = `${cid}_${cleanAddr}`;
+    let nowTs = Date.now();
+
+    // Nếu có trong Két sắt RAM (dưới 60s) -> Trả về luôn, không tốn 1 byte băng thông
+    if (SMART_MONEY_CACHE[cacheKey] && (nowTs - SMART_MONEY_CACHE[cacheKey].ts < 60000)) {
+        return res.json(SMART_MONEY_CACHE[cacheKey].data);
+    }
+
     let bapiUrl = `https://web3.binance.com/bapi/defi/v4/public/wallet-direct/buw/wallet/market/token/dynamic/info?chainId=${cid}&contractAddress=${cleanAddr}`;
-    console.log(`🔗 Target URL: ${bapiUrl}`);
 
     try {
-        // Nâng cấp bộ FAKE HEADERS xịn hơn để đánh lừa Cloudflare
         const advHeaders = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
@@ -733,49 +735,17 @@ app.get('/api/smart-money', async (req, res) => {
             "sec-ch-ua-platform": "\"Windows\""
         };
 
-        const response = await axios.get(bapiUrl, { 
-            headers: advHeaders, 
-            timeout: 10000 
-        });
+        const response = await axios.get(bapiUrl, { headers: advHeaders, timeout: 8000 });
 
-        console.log(`✅ [THÀNH CÔNG] HTTP Status: ${response.status}`);
-        console.log(`📦 [DỮ LIỆU] (Cắt ngắn):`, JSON.stringify(response.data).substring(0, 150) + "...");
-        console.log(`======================================================\n`);
-        
-        return res.json(response.data);
-
-    } catch (error) {
-        console.error(`\n❌ [LỖI RỒI CỤ ƠI] Binance đã chặn request!`);
-        console.error(`- Thông báo lỗi chung:`, error.message);
-        
-        if (error.response) {
-            // Lỗi do máy chủ Binance trả về (VD: 403, 418, 500)
-            console.error(`- HTTP Status Code:`, error.response.status);
-            console.error(`- Headers từ Binance:`, JSON.stringify(error.response.headers));
-            console.error(`- Nội dung Data rác/HTML chặn:`, 
-                typeof error.response.data === 'string' 
-                    ? error.response.data.substring(0, 300) + "..." 
-                    : JSON.stringify(error.response.data).substring(0, 300)
-            );
-            
-            if (error.response.status === 403) console.error("=> CHUẨN ĐOÁN: Bị Cloudflare chặn IP (403 Forbidden).");
-            if (error.response.status === 418) console.error("=> CHUẨN ĐOÁN: Bị Binance WAF chặn (418 I'm a teapot - Phát hiện Bot).");
-
-            res.status(error.response.status).json({ 
-                success: false, 
-                error_msg: error.message, 
-                status_code: error.response.status 
-            });
-
-        } else if (error.request) {
-            // Lỗi do không thể kết nối tới Binance (Timeout, sập DNS)
-            console.error(`- Không nhận được phản hồi từ Binance (Timeout hoặc IP Render bị ban cứng)`);
-            res.status(504).json({ success: false, error_msg: "Timeout/No Response" });
+        if (response.data && response.data.success) {
+            SMART_MONEY_CACHE[cacheKey] = { ts: nowTs, data: response.data };
+            return res.json(response.data);
         } else {
-            console.error(`- Lỗi kịch bản Nodejs:`, error.message);
-            res.status(500).json({ success: false, error_msg: "Lỗi nội bộ Server" });
+            return res.json(response.data || { success: false });
         }
-        console.log(`======================================================\n`);
+    } catch (error) {
+        // Chỉ im lặng trả về lỗi 500, không in log rác ra màn hình
+        return res.status(error.response ? error.response.status : 500).json({ success: false });
     }
 });
 // =====================================================================
