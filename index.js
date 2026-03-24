@@ -608,8 +608,8 @@ async function loopRealtime() {
 // 6. API TRẢ DỮ LIỆU CHO FRONTEND
 // ==========================================
 app.get('/api/market-data', (req, res) => {
-    // [CẦM MÁU BĂNG THÔNG] Ép trình duyệt tự cache 15 giây. Không tốn băng thông Render.
-    res.setHeader('Cache-Control', 'public, max-age=15');
+    // Ép Cache 60s
+    res.setHeader('Cache-Control', 'public, max-age=60');
     res.json({ success: true, count: Object.keys(GLOBAL_MARKET).length, data: GLOBAL_MARKET });
 });
 
