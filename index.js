@@ -608,14 +608,14 @@ async function loopRealtime() {
 // 6. API TRẢ DỮ LIỆU CHO FRONTEND
 // ==========================================
 app.get('/api/market-data', (req, res) => {
-    // Ép Cache 60s
+    // [CẦM MÁU BĂNG THÔNG] Ép Cache 60 giây. Mọi request trong 60s tới sẽ do RAM tự trả, Render không tốn 1 byte nào.
     res.setHeader('Cache-Control', 'public, max-age=60');
     res.json({ success: true, count: Object.keys(GLOBAL_MARKET).length, data: GLOBAL_MARKET });
 });
 
 app.get('/api/competition-data', (req, res) => {
-    // [CẦM MÁU BĂNG THÔNG] Ép trình duyệt tự cache 30 giây (Vì data giải đấu không cần update quá nhanh).
-    res.setHeader('Cache-Control', 'public, max-age=30');
+    // [CẦM MÁU BĂNG THÔNG] Ép Cache 60 giây.
+    res.setHeader('Cache-Control', 'public, max-age=60');
     
     const responseData = {};
     const nowStr = new Date().toISOString().split('T')[0];
