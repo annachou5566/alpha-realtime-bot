@@ -6,10 +6,10 @@ const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/clien
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https'); 
 
-// ⚡ THƯ VIỆN WEBSOCKET
+// ⚡ BỎ THƯ VIỆN WEBSOCKET ĐỂ ÉP XUNG BĂNG THÔNG
 const http = require('http');
-const { Server } = require("socket.io");
-const WebSocket = require('ws');
+// Xóa: const { Server } = require("socket.io");
+// Xóa: const WebSocket = require('ws');
 
 axios.defaults.httpsAgent = new https.Agent({
     servername: 'www.binance.com' 
@@ -17,14 +17,13 @@ axios.defaults.httpsAgent = new https.Agent({
 
 const app = express();
 
-// 🛑 NÉN DỮ LIỆU HTTP: GIẢM BĂNG THÔNG API TỪ 1MB XUỐNG 100KB
-// LƯU Ý: Phải chạy lệnh "npm install compression" trên Render nhé!
+// 🛑 NÉN DỮ LIỆU HTTP
 const compression = require('compression');
 app.use(compression());
 
-// ⚡ KHỞI TẠO SOCKET.IO ĐÈ LÊN EXPRESS
+// ⚡ CHỈ DÙNG EXPRESS THUẦN TÚY, CẮT BỎ SOCKET.IO
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+// Xóa: const io = new Server(server, { cors: { origin: '*' } });
 
 const PORT = process.env.PORT || 3000;
 const FAKE_HEADERS = {
@@ -609,10 +608,15 @@ async function loopRealtime() {
 // 6. API TRẢ DỮ LIỆU CHO FRONTEND
 // ==========================================
 app.get('/api/market-data', (req, res) => {
+    // [CẦM MÁU BĂNG THÔNG] Ép trình duyệt tự cache 15 giây. Không tốn băng thông Render.
+    res.setHeader('Cache-Control', 'public, max-age=15');
     res.json({ success: true, count: Object.keys(GLOBAL_MARKET).length, data: GLOBAL_MARKET });
 });
 
 app.get('/api/competition-data', (req, res) => {
+    // [CẦM MÁU BĂNG THÔNG] Ép trình duyệt tự cache 30 giây (Vì data giải đấu không cần update quá nhanh).
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    
     const responseData = {};
     const nowStr = new Date().toISOString().split('T')[0];
     Object.assign(responseData, HISTORY_CACHE);
