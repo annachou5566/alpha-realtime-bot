@@ -614,7 +614,7 @@ app.get('/api/market-data', (req, res) => {
 });
 
 app.get('/api/competition-data', (req, res) => {
-    // [CẦM MÁU BĂNG THÔNG] Ép Cache 60 giây.
+    // [CẦM MÁU BĂNG THÔNG] Ép Cache 60.
     res.setHeader('Cache-Control', 'public, max-age=60');
     
     const responseData = {};
