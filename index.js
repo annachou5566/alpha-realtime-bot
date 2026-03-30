@@ -455,10 +455,11 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 // ==========================================
 async function loopRealtime() {
     try {
-        const [resTot, resLim] = await Promise.all([
-            axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 10000 }),
-            axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 10000 })
-        ]);
+        const resTot = await axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 15000 });
+        
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        const resLim = await axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 15000 });
 
         if (resTot.data?.success) {
             const now = new Date();
@@ -811,9 +812,9 @@ server.listen(PORT, async () => {
     await fetch14DaysHistoryBapi(); 
     await syncTailsFromR2();
     
-    // 2. CHẠY PHƯƠNG ÁN DỰ PHÒNG CỐ ĐỊNH 15 GIÂY 1 LẦN
+    // 2. CHẠY PHƯƠNG ÁN DỰ PHÒNG CỐ ĐỊNH 20 GIÂY 1 LẦN
     loopRealtime(); 
-    setInterval(loopRealtime, 15000); 
+    setInterval(loopRealtime, 20000); 
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
