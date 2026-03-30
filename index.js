@@ -8,8 +8,6 @@ const https = require('https');
 
 // ⚡ BỎ THƯ VIỆN WEBSOCKET ĐỂ ÉP XUNG BĂNG THÔNG
 const http = require('http');
-// Xóa: const { Server } = require("socket.io");
-// Xóa: const WebSocket = require('ws');
 
 axios.defaults.httpsAgent = new https.Agent({
     servername: 'www.binance.com' 
@@ -23,7 +21,6 @@ app.use(compression());
 
 // ⚡ CHỈ DÙNG EXPRESS THUẦN TÚY, CẮT BỎ SOCKET.IO
 const server = http.createServer(app);
-// Xóa: const io = new Server(server, { cors: { origin: '*' } });
 
 const PORT = process.env.PORT || 3000;
 const FAKE_HEADERS = {
@@ -62,6 +59,23 @@ let ACTIVE_TOKEN_LIST = [];
 let TOKEN_METRICS_HISTORY = {}; 
 let MARKET_VOL_HISTORY = [];
 let PREDICTION_SMOOTHING_CACHE = {};
+let BINANCE_TOKEN_LIST = []; // [THÔNG MINH]: Lưu trữ danh bạ gốc của Binance
+
+// ==========================================
+// 0. TỰ ĐỘNG CẬP NHẬT DANH BẠ GỐC TỪ BINANCE
+// ==========================================
+async function syncBinanceTokenList() {
+    try {
+        const url = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
+        const res = await axios.get(url, { headers: FAKE_HEADERS, timeout: 10000 });
+        if (res.data && res.data.success && Array.isArray(res.data.data)) {
+            BINANCE_TOKEN_LIST = res.data.data;
+            console.log(`🌐 Đã tải thành công Danh bạ Master List: ${BINANCE_TOKEN_LIST.length} tokens từ Binance.`);
+        }
+    } catch (error) {
+        console.error("⚠️ Lỗi tải danh bạ Binance:", error.message);
+    }
+}
 
 // HÀM LẤY 14 CÂY NẾN 1D TỪ API BAPI (WEB3/DEFI)
 async function fetch14DaysHistoryBapi() {
@@ -155,7 +169,7 @@ async function syncHistoryFromR2() {
 async function syncActiveConfig() {
     try {
         const todayStr = new Date().toISOString().split('T')[0];
-        const { data, error } = await supabase.from('tournaments').select('id, contract, data').neq('id', -1);
+        const { data, error } = await supabase.from('tournaments').select('id, contract, data, name').neq('id', -1);
 
         if (error) throw error;
         if (data) {
@@ -168,10 +182,19 @@ async function syncActiveConfig() {
                 if (meta.end && meta.end < todayStr) isActive = false;
 
                 if (meta.alphaId) {
-                    meta.contract = row.contract || meta.contract;
-                    if(!meta.chainId && meta.chain) {
-                        const cMap = {'bsc': 56, 'bnb': 56, 'eth': 1, 'base': 8453, 'arb': 42161, 'op': 10, 'polygon': 137};
-                        meta.chainId = cMap[String(meta.chain).toLowerCase()] || 56;
+                    // [THÔNG MINH]: Tự động đối chiếu lấy Chain ID và Contract chuẩn từ Danh bạ Binance
+                    let officialToken = BINANCE_TOKEN_LIST.find(t => t.alphaId === meta.alphaId || (t.symbol && t.symbol.toUpperCase() === (row.name || '').toUpperCase()));
+                    
+                    if (officialToken) {
+                        meta.contract = officialToken.contractAddress || row.contract || meta.contract;
+                        meta.chainId = officialToken.chainId; // Lấy chuẩn chainId, ví dụ TRON là CT_195
+                    } else {
+                        meta.contract = row.contract || meta.contract;
+                        // Hỗ trợ hạ cánh an toàn nếu token quá mới chưa có trong danh bạ
+                        if (!meta.chainId && meta.chain) {
+                            const cMap = {'bsc': 56, 'bnb': 56, 'eth': 1, 'base': 8453, 'arb': 42161, 'op': 10, 'polygon': 137};
+                            meta.chainId = cMap[String(meta.chain).toLowerCase()] || 56;
+                        }
                     }
 
                     if (isActive) {
@@ -673,9 +696,10 @@ app.get('/api/klines', async (req, res) => {
     }
 
     let cleanAddr = contract.toLowerCase();
-    let cid = chainId || 56;
+    let cid = String(chainId || 56);
     
-    if (String(cid) === "501" || cid === "CT_501" || String(cid) === "784" || cid === "CT_784") {
+    // [THÔNG MINH]: Giữ nguyên Case-sensitive cho TRON, SOLANA, TON
+    if (cid === "501" || cid === "CT_501" || cid === "784" || cid === "CT_784" || cid === "195" || cid === "CT_195") {
         cleanAddr = contract;
     }
 
@@ -716,6 +740,7 @@ app.get('/api/klines', async (req, res) => {
         res.status(500).json({ error: "Lỗi lấy dữ liệu" });
     }
 });
+
 // =======================================================
 // 🛡️ API SMART MONEY (TÀNG HÌNH + RAM CACHE 60s CHỐNG QUÁ TẢI)
 // =======================================================
@@ -728,10 +753,11 @@ app.get('/api/smart-money', async (req, res) => {
         return res.json({ success: false, message: "Thiếu contract" });
     }
 
-    let cid = chainId || 56;
+    let cid = String(chainId || 56);
     let cleanAddr = contractAddress.toLowerCase();
     
-    if (String(cid) === "501" || cid === "CT_501" || String(cid) === "784" || cid === "CT_784") {
+    // [THÔNG MINH]: Giữ nguyên Case-sensitive cho TRON, SOLANA, TON
+    if (cid === "501" || cid === "CT_501" || cid === "784" || cid === "CT_784" || cid === "195" || cid === "CT_195") {
         cleanAddr = contractAddress; 
     }
 
@@ -770,12 +796,14 @@ app.get('/api/smart-money', async (req, res) => {
         return res.status(error.response ? error.response.status : 500).json({ success: false });
     }
 });
+
 // =====================================================================
 // 🚀 START SERVER
 // =====================================================================
 server.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
     
+    await syncBinanceTokenList(); // <--- Đưa Master List lên đầu tiên
     await syncHistoryFromR2();
     await syncActiveConfig();
     await syncBaseData();
@@ -783,12 +811,11 @@ server.listen(PORT, async () => {
     await fetch14DaysHistoryBapi(); 
     await syncTailsFromR2();
     
-    
-    
     // 2. CHẠY PHƯƠNG ÁN DỰ PHÒNG CỐ ĐỊNH 15 GIÂY 1 LẦN
     loopRealtime(); 
     setInterval(loopRealtime, 15000); 
     
+    setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
     setInterval(syncBaseData, 30 * 60 * 1000);   
     setInterval(checkStartOffsets, 15 * 60 * 1000); 
