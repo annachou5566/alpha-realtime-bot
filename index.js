@@ -631,6 +631,10 @@ async function loopRealtime() {
 // ==========================================
 // 6. API TRẢ DỮ LIỆU CHO FRONTEND
 // ==========================================
+app.get('/api/token-list', (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.json({ success: true, data: BINANCE_TOKEN_LIST });
+});
 app.get('/api/market-data', (req, res) => {
     // [CẦM MÁU BĂNG THÔNG] Ép Cache 60 giây. Mọi request trong 60s tới sẽ do RAM tự trả, Render không tốn 1 byte nào.
     res.setHeader('Cache-Control', 'public, max-age=60');
