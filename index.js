@@ -46,8 +46,27 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 
 app.use(cors({ origin: '*' }));
 
+// --- BẢO MẬT: CỬA AN NINH KIỂM TRA API KEY ---
+const RENDER_SECRET_KEY = process.env.API_SECRET_KEY; // Lấy key từ biến môi trường
+app.use((req, res, next) => {
+    // Luôn cho phép các luồng kiểm tra sơ bộ (Preflight OPTIONS) đi qua
+    if (req.method === 'OPTIONS') return next();
+    
+    const clientKey = req.headers['x-api-key'];
+    
+    // Nếu không có key hoặc key sai -> Đuổi cổ ngay lập tức
+    if (!clientKey || clientKey !== RENDER_SECRET_KEY) {
+        console.warn(`🚨 Cảnh báo: Có kẻ lạ xâm nhập bị chặn! IP: ${req.ip}`);
+        return res.status(401).json({ error: "Unauthorized: Invalid API Key" });
+    }
+    
+    // Key đúng -> Cho phép đi tiếp vào các API bên dưới
+    next();
+});
+// ----------------------------------------------
+
 // --- RAM CACHE ---
-let GLOBAL_MARKET = {};      
+let GLOBAL_MARKET = {}; 
 let ACTIVE_CONFIG = {};      
 let HISTORY_CACHE = {};      
 let BASE_HISTORY_DATA = {};  
