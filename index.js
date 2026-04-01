@@ -329,6 +329,7 @@ setInterval(() => {
     }
 }, 60000);
 
+
 // ==========================================
 // 2. LOGIC TÍNH TOÁN AI PREDICTION
 // ==========================================
@@ -336,7 +337,16 @@ function calculateAiPrediction(staticData, accumulatedData) {
     let currentVol = accumulatedData.limitAccumulated || 0;
     let usingLimit = true;
 
-    if (currentVol === 0 && accumulatedData.totalAccumulated > 0) {
+    // Kiểm tra xem token có phải mạng BSC không (chainId = 56)
+    const isBSC = String(staticData.chainId) === "56";
+
+    // Nếu KHÁC hệ BSC, ép dùng Tổng Vol (totalAccumulated đã gồm cả limit và onchain)
+    if (!isBSC) {
+        currentVol = accumulatedData.totalAccumulated || 0;
+        usingLimit = false;
+    } 
+    // Nếu là BSC nhưng không có vol limit, fallback về dùng tổng
+    else if (currentVol === 0 && accumulatedData.totalAccumulated > 0) {
         currentVol = accumulatedData.totalAccumulated;
         usingLimit = false; 
     }
