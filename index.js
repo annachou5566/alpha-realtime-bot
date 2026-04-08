@@ -482,13 +482,20 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 // ==========================================
 // 4. VÒNG LẶP REALTIME (FALLBACK API)
 // ==========================================
+// ==========================================
+// 4. VÒNG LẶP REALTIME (CÓ DEBUG BINANCE)
+// ==========================================
 async function loopRealtime() {
     try {
+        console.log("🔍 [DEBUG] Bắt đầu gọi API Binance BULK_TOTAL...");
         const resTot = await axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 15000 });
+        console.log(`✅ [DEBUG] BULK_TOTAL Status: ${resTot.status} | Data Success: ${resTot.data?.success} | Số lượng token: ${resTot.data?.data?.length || 0}`);
         
         await new Promise(resolve => setTimeout(resolve, 500));
         
+        console.log("🔍 [DEBUG] Bắt đầu gọi API Binance BULK_LIMIT...");
         const resLim = await axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 15000 });
+        console.log(`✅ [DEBUG] BULK_LIMIT Status: ${resLim.status} | Data Success: ${resLim.data?.success} | Số lượng token: ${resLim.data?.data?.length || 0}`);
 
         if (resTot.data?.success) {
             const now = new Date();
@@ -648,10 +655,14 @@ async function loopRealtime() {
             }); 
 
             GLOBAL_MARKET['_STATS'] = MARKET_VOL_HISTORY;
-
+            console.log(`🟢 [DEBUG] Quét xong. Cập nhật được ${Object.keys(GLOBAL_MARKET).length} token vào GLOBAL_MARKET.`);
         } 
     } catch (e) { 
-        console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); 
+        console.error("⚠️ [LỖI] loopRealtime thất bại:", e.message); 
+        if (e.response) {
+            console.error(`🛑 [BINANCE BLOCK DETECTED] Mã lỗi: ${e.response.status}`);
+            console.error(`🛑 [Chi tiết Data trả về]:`, e.response.data);
+        }
     }
 }
 
@@ -671,8 +682,13 @@ app.get('/api/market-data', (req, res) => {
 });
 
 app.get('/api/competition-data', (req, res) => {
-    // [CẦM MÁU BĂNG THÔNG] Ép Cache 60.
+    // Ép Cache 60.
     res.setHeader('Cache-Control', 'public, max-age=60');
+    
+    // [DEBUG LOG] In ra số lượng giải đấu đang có trong RAM
+    console.log(`📡 [API /competition-data] Nhận request. Đang xử lý...`);
+    console.log(`   👉 ACTIVE_CONFIG (Giải đang chạy): ${Object.keys(ACTIVE_CONFIG).length} giải.`);
+    console.log(`   👉 HISTORY_CACHE (Giải đã chốt): ${Object.keys(HISTORY_CACHE).length} giải.`);
     
     const responseData = {};
     const nowStr = new Date().toISOString().split('T')[0];
@@ -711,6 +727,7 @@ app.get('/api/competition-data', (req, res) => {
         };
     });
 
+    console.log(`📤 [API /competition-data] Trả về tổng cộng: ${Object.keys(responseData).length} giải đấu (Object keys).`);
     res.json(responseData);
 });
 
