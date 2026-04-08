@@ -732,41 +732,42 @@ app.get('/api/competition-data', (req, res) => {
 });
 
 // =======================================================
-// 📈 API KLINES (RAM CACHE 15s CHỐNG SPAM BINANCE)
+// 📈 API KLINES (CÓ LOG DEBUG)
 // =======================================================
-const KLINES_CACHE = {};
-
 app.get('/api/klines', async (req, res) => {
     const { contract, chainId, interval, limit } = req.query;
+
+    console.log(`\n📊 [API /klines] Nhận request: contract=${contract}, chainId=${chainId}, interval=${interval}`);
 
     let binanceInterval = interval === 'tick' ? '1s' : interval;
     let queryLimit = limit || 300;
 
     if (!contract || contract === 'undefined' || contract === 'null') {
+        console.log("❌ [API /klines] Lỗi: Thiếu tham số contract hợp lệ.");
         return res.json([]); 
     }
 
     let cleanAddr = contract.toLowerCase();
     let cid = String(chainId || 56);
     
-    // [THÔNG MINH]: Giữ nguyên Case-sensitive cho TRON, SOLANA, TON
+    // Giữ nguyên Case-sensitive cho các chain đặc thù
     if (cid === "501" || cid === "CT_501" || cid === "784" || cid === "CT_784" || cid === "195" || cid === "CT_195") {
         cleanAddr = contract;
     }
 
-    // 1. TẠO CHÌA KHÓA CACHE ĐỘC NHẤT
     let cacheKey = `${cid}_${cleanAddr}_${binanceInterval}_${queryLimit}`;
     let nowTs = Date.now();
 
-    // 2. KIỂM TRA KÉT SẮT RAM (NẾU CÓ TRONG VÒNG 15 GIÂY THÌ TRẢ VỀ LUÔN)
     if (KLINES_CACHE[cacheKey] && (nowTs - KLINES_CACHE[cacheKey].ts < 15000)) {
-        // [CẦM MÁU]: Trả thẳng từ RAM, không gọi axios.get lên Binance!
+        console.log(`🟢 [API /klines] Trả về nhanh từ RAM Cache (${KLINES_CACHE[cacheKey].data.length} nến).`);
         return res.json(KLINES_CACHE[cacheKey].data);
     }
 
     let klines = [];
     try {
         let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${cid}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
+        
+        console.log(`🌐 [API /klines] Gọi lên Binance BAPI: ${bapiUrl}`);
         
         const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
         
@@ -779,16 +780,22 @@ app.get('/api/klines', async (req, res) => {
                 }
             });
             klines.sort((a, b) => a.time - b.time);
+            console.log(`✅ [API /klines] Thành công! Kéo được ${klines.length} nến từ Binance.`);
+        } else {
+            console.error(`⚠️ [API /klines] Binance trả về cấu trúc lạ hoặc lỗi:`, JSON.stringify(response.data).substring(0, 200));
         }
         
-        // 3. LƯU DỮ LIỆU MỚI VÀO KÉT SẮT RAM
         KLINES_CACHE[cacheKey] = { ts: nowTs, data: klines };
-        
         res.json(klines);
         
     } catch (error) {
-        // Tắt console.error để tránh rác log server nếu mạng bị giật
-        res.status(500).json({ error: "Lỗi lấy dữ liệu" });
+        console.error(`❌ [API /klines] CÓ LỖI XẢY RA: ${error.message}`);
+        if (error.response) {
+            console.error(`   👉 Mã lỗi HTTP từ Binance: ${error.response.status}`);
+            console.error(`   👉 Chi tiết:`, error.response.data);
+        }
+        // Vẫn trả về mảng rỗng thay vì 500 để Chart UI không bị crash
+        res.status(500).json([]); 
     }
 });
 
