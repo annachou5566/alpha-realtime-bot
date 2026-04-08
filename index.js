@@ -52,11 +52,19 @@ app.use((req, res, next) => {
     // Luôn cho phép các luồng kiểm tra sơ bộ (Preflight OPTIONS) đi qua
     if (req.method === 'OPTIONS') return next();
     
+    // Mở cửa tự do cho Health Check của Render (Thường gọi vào đường dẫn gốc "/")
+    if (req.path === '/' || req.path === '/health') {
+        return res.status(200).send('OK');
+    }
+    
     const clientKey = req.headers['x-api-key'];
     
-    // Nếu không có key hoặc key sai -> Đuổi cổ ngay lập tức
+    // Nếu không có key hoặc key sai -> Chặn lại
     if (!clientKey || clientKey !== RENDER_SECRET_KEY) {
-        console.warn(`🚨 Cảnh báo: Có kẻ lạ xâm nhập bị chặn! IP: ${req.ip}`);
+        // Chỉ in cảnh báo nếu KHÔNG PHẢI là máy chủ tự gọi chính nó (tránh rác log do Health Check)
+        if (req.ip !== '::1' && req.ip !== '127.0.0.1') {
+            console.warn(`🚨 Cảnh báo: Có kẻ lạ xâm nhập bị chặn! IP: ${req.ip} | Path: ${req.path}`);
+        }
         return res.status(401).json({ error: "Unauthorized: Invalid API Key" });
     }
     
