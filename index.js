@@ -56,7 +56,7 @@ app.use((req, res, next) => {
     if (req.path === '/' || req.path === '/health') {
         return res.status(200).send('OK');
     }
-    
+    if (req.path === '/api/full-depth') return next();
     const clientKey = req.headers['x-api-key'];
     
     // Nếu không có key hoặc key sai -> Chặn lại
