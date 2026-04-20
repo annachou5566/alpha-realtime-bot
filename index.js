@@ -863,3 +863,64 @@ server.listen(PORT, async () => {
     setInterval(checkStartOffsets, 15 * 60 * 1000); 
     setInterval(syncTailsFromR2, 10 * 60 * 1000); 
 });
+
+// =======================================================
+// 🌊 API FULL DEPTH (ORDER BOOK SNAPSHOT + RAM CACHE 3s)
+// =======================================================
+const FULL_DEPTH_CACHE = {}; 
+
+app.get('/api/full-depth', async (req, res) => {
+    const { symbol, limit } = req.query;
+    
+    if (!symbol || symbol === 'undefined' || symbol === 'null') {
+        return res.json({ success: false, message: "Thiếu symbol" });
+    }
+
+    let queryLimit = limit || 500;
+    
+    // 1. TẠO CHÌA KHÓA CACHE ĐỘC NHẤT
+    let cacheKey = `${symbol}_${queryLimit}`;
+    let nowTs = Date.now();
+
+    // 2. KHIÊN BẢO VỆ RAM (CACHE 3 GIÂY)
+    // Sổ lệnh cần độ trễ thấp, nên 3 giây là con số hoàn hảo. 
+    // Nếu 1000 users cùng mở 1 token, Render chỉ gọi 1 request lên Binance, 999 request còn lại lấy từ RAM.
+    if (FULL_DEPTH_CACHE[cacheKey] && (nowTs - FULL_DEPTH_CACHE[cacheKey].ts < 3000)) {
+        return res.json(FULL_DEPTH_CACHE[cacheKey].data);
+    }
+
+    let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/fullDepth?symbol=${symbol}&limit=${queryLimit}`;
+
+    try {
+        // 3. NGỤY TRANG TRÌNH DUYỆT (BYPASS CLOUDFLARE WAF)
+        const advHeaders = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Origin": "https://www.binance.com",
+            "Referer": "https://www.binance.com/",
+            "sec-ch-ua": "\"Not A(Brand\";v=\"99\", \"Google Chrome\";v=\"121\", \"Chromium\";v=\"121\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": "\"Windows\""
+        };
+
+        // Ép timeout 5000ms (5 giây) để không bị treo server nếu Binance lag
+        const response = await axios.get(bapiUrl, { headers: advHeaders, timeout: 5000 });
+
+        if (response.data && response.data.success) {
+            // Lưu vào Két sắt RAM
+            FULL_DEPTH_CACHE[cacheKey] = { ts: nowTs, data: response.data };
+            return res.json(response.data);
+        } else {
+            return res.json(response.data || { success: false });
+        }
+    } catch (error) {
+        // 4. CIRCUIT BREAKER (TỰ ĐỘNG NGẮT MẠCH)
+        // Lỗi 500, nhưng trả về chuỗi JSON an toàn để Frontend không bị crash
+        return res.status(error.response ? error.response.status : 500).json({ 
+            success: false, 
+            message: "Lỗi kết nối Snapshot Order Book",
+            data: { bids: [], asks: [] } // Trả về mảng rỗng để KLineChart không bị lỗi undefined
+        });
+    }
+});
