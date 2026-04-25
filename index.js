@@ -673,14 +673,14 @@ app.get('/api/token-list', (req, res) => {
     res.json({ success: true, data: BINANCE_TOKEN_LIST });
 });
 app.get('/api/market-data', (req, res) => {
-    // [CẦM MÁU BĂNG THÔNG] Ép Cache 60 giây. Mọi request trong 60s tới sẽ do RAM tự trả, Render không tốn 1 byte nào.
-    res.setHeader('Cache-Control', 'public, max-age=60');
+    // [CẦM MÁU BĂNG THÔNG] Ép Cache 180 giây.
+    res.setHeader('Cache-Control', 'public, max-age=180');
     res.json({ success: true, count: Object.keys(GLOBAL_MARKET).length, data: GLOBAL_MARKET });
 });
 
 app.get('/api/competition-data', (req, res) => {
-    // [CẦM MÁU BĂNG THÔNG] Ép Cache 60.
-    res.setHeader('Cache-Control', 'public, max-age=60');
+    // [CẦM MÁU BĂNG THÔNG] Ép Cache 180.
+    res.setHeader('Cache-Control', 'public, max-age=180');
     
     const responseData = {};
     const nowStr = new Date().toISOString().split('T')[0];
@@ -876,7 +876,7 @@ app.get('/api/full-depth', async (req, res) => {
         return res.json({ success: false, message: "Thiếu symbol" });
     }
 
-    let queryLimit = limit || 500;
+    let queryLimit = limit || 50;
     
     // 1. TẠO CHÌA KHÓA CACHE ĐỘC NHẤT
     let cacheKey = `${symbol}_${queryLimit}`;
@@ -885,7 +885,7 @@ app.get('/api/full-depth', async (req, res) => {
     // 2. KHIÊN BẢO VỆ RAM (CACHE 3 GIÂY)
     // Sổ lệnh cần độ trễ thấp, nên 3 giây là con số hoàn hảo. 
     // Nếu 1000 users cùng mở 1 token, Render chỉ gọi 1 request lên Binance, 999 request còn lại lấy từ RAM.
-    if (FULL_DEPTH_CACHE[cacheKey] && (nowTs - FULL_DEPTH_CACHE[cacheKey].ts < 3000)) {
+    if (FULL_DEPTH_CACHE[cacheKey] && (nowTs - FULL_DEPTH_CACHE[cacheKey].ts < 10000)) {
         return res.json(FULL_DEPTH_CACHE[cacheKey].data);
     }
 
