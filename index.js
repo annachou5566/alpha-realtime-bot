@@ -388,10 +388,72 @@ function calculateAiPrediction(staticData, accumulatedData) {
         }
     }
 
-    let effectiveVol = projectedVol;
+    // C. TÍNH VOLUME HIỆU DỤNG VỚI EARLY BIRD DYNAMIC (EXACT CALCULATION)
+    let multipliers = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]; 
+
+    if (staticData.multipliers && Array.isArray(staticData.multipliers) && staticData.multipliers.length > 0) {
+        multipliers = staticData.multipliers;
+    } else {
+        let ebValue = staticData.earlyBird;
+        if (ebValue === true || ebValue === 'true') ebValue = '1.4x'; 
+        if (ebValue === '2.0x') multipliers = [2.0, 1.8, 1.7, 1.5, 1.3, 1.1, 1.0];
+        else if (ebValue === '1.8x') multipliers = [1.8, 1.6, 1.4, 1.3, 1.3, 1.1, 1.0];
+        else if (ebValue === '1.4x') multipliers = [1.4, 1.3, 1.2, 1.2, 1.1, 1.1, 1.0];
+    }
+
+    let exactEffectiveVol = projectedVol;
+    let isExactCalcUsed = false;
+    let hasBoost = multipliers.some(m => m > 1.0);
+
+    if (hasBoost && staticData.start) {
+        let sTime = staticData.startTime || "13:00:00";
+        if (sTime.length === 5) sTime += ":00";
+        
+        const startTimeMs = new Date(staticData.start + 'T' + sTime + 'Z').getTime();
+        const oneDayMs = 86400000;
+
+        const getDayIndex = (timestampMs) => {
+            let elapsedDays = (timestampMs - startTimeMs) / oneDayMs;
+            let dayInt = Math.floor(elapsedDays) + 1;
+            if (dayInt < 1) dayInt = 1;
+            if (dayInt > multipliers.length) dayInt = multipliers.length;
+            return dayInt;
+        };
+
+        let calculatedVol = 0;
+        let rawHistoryAccounted = 0;
+        
+        if (staticData.real_vol_history && Array.isArray(staticData.real_vol_history)) {
+            staticData.real_vol_history.forEach(item => {
+                let v = parseFloat(item.vol || 0);
+                if (v > 0) {
+                    let histTimeMs = new Date(item.date + 'T23:59:59Z').getTime();
+                    let dIndex = getDayIndex(histTimeMs);
+                    calculatedVol += (v * multipliers[dIndex - 1]);
+                    rawHistoryAccounted += v;
+                }
+            });
+            isExactCalcUsed = true;
+        }
+
+        if (isExactCalcUsed) {
+            let rawTodayVol = projectedVol - rawHistoryAccounted; 
+            if (rawTodayVol < 0) rawTodayVol = 0;
+
+            let currentDayIndex = getDayIndex(now.getTime());
+            calculatedVol += (rawTodayVol * multipliers[currentDayIndex - 1]);
+            
+            exactEffectiveVol = calculatedVol;
+        } else {
+            let avgMultiplier = multipliers.reduce((a, b) => a + b, 0) / multipliers.length;
+            exactEffectiveVol = projectedVol * avgMultiplier;
+        }
+    }
+
+    let effectiveVol = exactEffectiveVol;
     const ruleType = staticData.ruleType || "trade_all";
-    if (ruleType === 'buy_only') effectiveVol = projectedVol / 2;
-    if (ruleType === 'trade_x4') effectiveVol = projectedVol * 4;
+    if (ruleType === 'buy_only') effectiveVol = exactEffectiveVol / 2;
+    if (ruleType === 'trade_x4') effectiveVol = exactEffectiveVol * 4;
 
     let ticketSize = 0;
     if (usingLimit && accumulatedData.limitTx > 0) ticketSize = currentVol / accumulatedData.limitTx;
@@ -440,7 +502,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
     return {
         target: Math.round(finalTarget),
         delta: Math.round(deltaVal),
-        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)}) ${usingLimit ? '[LIMIT]' : ''}`,
+        rule: `Global Standard${adminNote} (K=${finalK.toFixed(2)}) ${usingLimit ? '[LIMIT]' : ''}${hasBoost ? ` [EB: ${isExactCalcUsed ? 'EXACT' : 'AVG'}]` : ''}`,
         R: finalK,
         status_label: isFinalized ? "FINALIZED" : "LIVE PREDICTION",
         debug_info: `Vol:${(effectiveVol/1e9).toFixed(2)}B Ticket:$${Math.round(ticketSize)}`,
