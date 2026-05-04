@@ -397,6 +397,7 @@ function calculateAiPrediction(staticData, accumulatedData) {
         let ebValue = staticData.earlyBird;
         if (ebValue === true || ebValue === 'true') ebValue = '1.4x'; 
         if (ebValue === '2.0x') multipliers = [2.0, 1.8, 1.7, 1.5, 1.3, 1.1, 1.0];
+        else if (ebValue === '2.0_alt') multipliers = [2.0, 1.8, 1.8, 1.6, 1.4, 1.2, 1.0]; // <--- Thêm mốc mới ở đây
         else if (ebValue === '1.8x') multipliers = [1.8, 1.6, 1.4, 1.3, 1.3, 1.1, 1.0];
         else if (ebValue === '1.4x') multipliers = [1.4, 1.3, 1.2, 1.2, 1.1, 1.1, 1.0];
     }
