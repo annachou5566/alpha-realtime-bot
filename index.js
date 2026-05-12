@@ -394,10 +394,9 @@ function calculateAiPrediction(staticData, accumulatedData) {
     if (staticData.multipliers && Array.isArray(staticData.multipliers) && staticData.multipliers.length > 0) {
         multipliers = staticData.multipliers;
     } else {
-        } else {
         let ebValue = staticData.earlyBird;
         if (ebValue === true || ebValue === 'true') ebValue = '1.4x'; 
-        if (ebValue === '2.5x') multipliers = [2.5, 2.2, 1.8, 1.6, 1.4, 1.2, 1.0]; // <--- Thêm mốc 2.5x ở đây
+        if (ebValue === '2.5x') multipliers = [2.5, 2.2, 1.8, 1.6, 1.4, 1.2, 1.0];
         else if (ebValue === '2.0x') multipliers = [2.0, 1.8, 1.7, 1.5, 1.3, 1.1, 1.0];
         else if (ebValue === '2.0_alt') multipliers = [2.0, 1.8, 1.8, 1.6, 1.4, 1.2, 1.0];
         else if (ebValue === '1.8x') multipliers = [1.8, 1.6, 1.4, 1.3, 1.3, 1.1, 1.0];
