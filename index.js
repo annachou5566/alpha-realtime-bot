@@ -6,7 +6,7 @@ const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/clien
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https'); 
 
-// ⚡ BỎ THƯ VIỆN WEBSOCKET ĐỂ ÉP XUNG BĂNG THÔNG
+// ⚡ BỎ THƯ VIỆN WEBSOCKET ĐỂ ÉP XUNG BĂNG THÔ
 const http = require('http');
 
 axios.defaults.httpsAgent = new https.Agent({
