@@ -44,7 +44,22 @@ const s3Client = new S3Client({
 });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-app.use(cors({ origin: '*' }));
+// [BW FIX] Chỉ cho phép đúng domain production — chặn bot/site lạ nhúng API
+const ALLOWED_CORS_ORIGINS = [
+    'https://wave-alpha.pages.dev',
+    'http://localhost:8788',
+    'http://localhost:3000'
+];
+app.use(cors({
+    origin: function(origin, callback) {
+        // Cho phép server-to-server (Render gọi nội bộ, health check) và domain hợp lệ
+        if (!origin || ALLOWED_CORS_ORIGINS.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('CORS: origin không được phép'));
+        }
+    }
+}));
 
 // --- BẢO MẬT: CỬA AN NINH KIỂM TRA API KEY ---
 const RENDER_SECRET_KEY = process.env.API_SECRET_KEY; // Lấy key từ biến môi trường
@@ -56,7 +71,8 @@ app.use((req, res, next) => {
     if (req.path === '/' || req.path === '/health') {
         return res.status(200).send('OK');
     }
-    if (req.path === '/api/full-depth') return next();
+    // [BW FIX] Đã xóa bypass API key cho /api/full-depth
+    // Cloudflare Function full-depth.js đã được cập nhật để gửi x-api-key
     const clientKey = req.headers['x-api-key'];
     
     // Nếu không có key hoặc key sai -> Chặn lại
@@ -917,9 +933,10 @@ server.listen(PORT, async () => {
     await fetch14DaysHistoryBapi(); 
     await syncTailsFromR2();
     
-    // 2. CHẠY PHƯƠNG ÁN DỰ PHÒNG CỐ ĐỊNH 20 GIÂY 1 LẦN
+    // [BW FIX] Tăng interval từ 20s lên 60s — giảm ~3x số lần gọi Binance bulk
+    // Frontend dùng WebSocket Binance trực tiếp cho giá realtime nên 60s vẫn đủ
     loopRealtime(); 
-    setInterval(loopRealtime, 20000); 
+    setInterval(loopRealtime, 60000); 
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
@@ -940,7 +957,9 @@ app.get('/api/full-depth', async (req, res) => {
         return res.json({ success: false, message: "Thiếu symbol" });
     }
 
-    let queryLimit = limit || 50;
+    // [BW FIX] Clamp limit: mặc định 20, tối đa 20 — giảm payload mỗi response ~60%
+    let rawLimit = parseInt(limit, 10);
+    let queryLimit = (!isNaN(rawLimit) && rawLimit > 0) ? Math.min(rawLimit, 20) : 20;
     
     // 1. TẠO CHÌA KHÓA CACHE ĐỘC NHẤT
     let cacheKey = `${symbol}_${queryLimit}`;
