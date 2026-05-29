@@ -45,18 +45,24 @@ const s3Client = new S3Client({
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 // [BW FIX] Chỉ cho phép đúng domain production — chặn bot/site lạ nhúng API
-const ALLOWED_CORS_ORIGINS = [
-    'https://wave-alpha.pages.dev',
-    'http://localhost:8788',
-    'http://localhost:3000'
-];
 app.use(cors({
     origin: function(origin, callback) {
-        // Cho phép server-to-server (Render gọi nội bộ, health check) và domain hợp lệ
-        if (!origin || ALLOWED_CORS_ORIGINS.includes(origin)) {
+        // Không có origin = server-to-server (Cloudflare Function, health check) → cho qua
+        if (!origin) return callback(null, true);
+
+        // Cho phép production domain, preview deployments Cloudflare Pages, và localhost dev
+        const isAllowed =
+            origin === 'https://wave-alpha.pages.dev' ||
+            origin.endsWith('.wave-alpha.pages.dev') ||   // preview deployments
+            origin.endsWith('.pages.dev') ||               // các branch deploy khác
+            origin.startsWith('http://localhost');
+
+        if (isAllowed) {
             callback(null, true);
         } else {
-            callback(new Error('CORS: origin không được phép'));
+            // Warn nhẹ để monitor, không throw Error (tránh spam log dạng stack trace)
+            console.warn(`[CORS] Blocked origin: ${origin}`);
+            callback(null, false);
         }
     }
 }));
