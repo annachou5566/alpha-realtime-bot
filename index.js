@@ -128,6 +128,24 @@ async function syncBinanceTokenList() {
 
 // HÀM LẤY 14 CÂY NẾN 1D TỪ API BAPI (WEB3/DEFI)
 async function fetch14DaysHistoryBapi() {
+    // [BW FIX] Kiểm tra R2 trước — chỉ cào lại nếu data cũ hơn 12 tiếng
+    // Render free tier tự sleep/wake nhiều lần/ngày, không nên cào lại mỗi lần
+    try {
+        const checkCmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "market_vol_history.json" });
+        const checkResp = await s3Client.send(checkCmd);
+        const lastModified = checkResp.LastModified; // Date object từ S3
+        const ageHours = (Date.now() - new Date(lastModified).getTime()) / (1000 * 60 * 60);
+        if (ageHours < 12) {
+            console.log(`⚡ Bỏ qua cào BAPI — R2 còn mới (${ageHours.toFixed(1)}h trước). Dùng syncMarketHistory() thay thế.`);
+            await syncMarketHistory();
+            return;
+        }
+        console.log(`🔄 R2 đã cũ ${ageHours.toFixed(1)}h — tiến hành cào lại BAPI.`);
+    } catch (e) {
+        // R2 chưa có file → cào lần đầu bình thường
+        console.log("📭 Chưa có market_vol_history.json trên R2 — cào lần đầu.");
+    }
+
     console.log("⏳ Đang lấy danh sách Token để cào lịch sử Volume...");
     let historyMap = {}; 
 
@@ -187,6 +205,20 @@ async function fetch14DaysHistoryBapi() {
         MARKET_VOL_HISTORY = tempArr.filter(x => x.date !== todayStr).slice(-13);
 
         console.log(`✅ Cào BAPI xong! Nạp thành công ${MARKET_VOL_HISTORY.length} ngày lịch sử chuẩn 100%.`);
+
+        // [BW FIX] Lưu kết quả lên R2 để lần wake-up tiếp theo guard đọc được, không cào lại
+        try {
+            const saveCmd = new PutObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: "market_vol_history.json",
+                Body: JSON.stringify(MARKET_VOL_HISTORY),
+                ContentType: "application/json"
+            });
+            await s3Client.send(saveCmd);
+            console.log("✅ Đã lưu market_vol_history.json lên R2.");
+        } catch (saveErr) {
+            console.warn("⚠️ Lưu R2 thất bại (không ảnh hưởng data RAM):", saveErr.message);
+        }
     } catch (error) {
         console.error("❌ Lỗi nghiêm trọng khi cào BAPI:", error.message);
     }
