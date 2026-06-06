@@ -367,6 +367,40 @@ async function syncTailsFromR2() {
 }
 
 let lastHistoryDay = new Date().getUTCDate();
+
+// [RAM FIX] Dọn rác cache định kỳ — xóa entry của token không còn active
+// Chạy mỗi 30 phút, xử lý cả PREDICTION_SMOOTHING_CACHE, TOKEN_METRICS_HISTORY, KLINES_CACHE
+setInterval(() => {
+    const activeIds = new Set(Object.keys(ACTIVE_CONFIG));
+
+    // Xóa smoothing cache của token không còn active
+    for (const id of Object.keys(PREDICTION_SMOOTHING_CACHE)) {
+        if (!activeIds.has(id)) delete PREDICTION_SMOOTHING_CACHE[id];
+    }
+
+    // Xóa metrics history của token không còn active
+    for (const id of Object.keys(TOKEN_METRICS_HISTORY)) {
+        if (!activeIds.has(id)) delete TOKEN_METRICS_HISTORY[id];
+    }
+
+    // Xóa KLINES_CACHE entry quá cũ (> 10 phút không được dùng)
+    const now = Date.now();
+    for (const key of Object.keys(KLINES_CACHE)) {
+        if (now - KLINES_CACHE[key].ts > 600000) delete KLINES_CACHE[key];
+    }
+
+    // Xóa FULL_DEPTH_CACHE entry cũ (> 1 phút)
+    for (const key of Object.keys(FULL_DEPTH_CACHE)) {
+        if (now - FULL_DEPTH_CACHE[key].ts > 60000) delete FULL_DEPTH_CACHE[key];
+    }
+
+    // Xóa SMART_MONEY_CACHE entry cũ (> 5 phút)
+    for (const key of Object.keys(SMART_MONEY_CACHE)) {
+        if (now - SMART_MONEY_CACHE[key].ts > 300000) delete SMART_MONEY_CACHE[key];
+    }
+
+    console.log(`🧹 Cache cleanup: smoothing=${Object.keys(PREDICTION_SMOOTHING_CACHE).length} metrics=${Object.keys(TOKEN_METRICS_HISTORY).length} klines=${Object.keys(KLINES_CACHE).length}`);
+}, 30 * 60 * 1000);
 setInterval(() => {
     const nowDay = new Date().getUTCDate();
     if (nowDay !== lastHistoryDay) {
@@ -575,6 +609,10 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
     if (ACTIVE_CONFIG[alphaId]) delete ACTIVE_CONFIG[alphaId];
     if (!config || HISTORY_CACHE[alphaId]) return;
 
+    // [RAM FIX] Xóa cache smoothing và metrics khi token finalize — tránh leak RAM dài hạn
+    delete PREDICTION_SMOOTHING_CACHE[alphaId];
+    delete TOKEN_METRICS_HISTORY[alphaId];
+
     console.log(`🏁 ĐANG CHỐT SỔ GIẢI ĐẤU: ${alphaId} ...`);
     const finalObj = {
         ...config,
@@ -774,6 +812,14 @@ async function loopRealtime() {
             }); 
 
             GLOBAL_MARKET['_STATS'] = MARKET_VOL_HISTORY;
+
+            // [RAM FIX] Xóa token khỏi GLOBAL_MARKET nếu không còn trong Binance bulk response
+            // Tránh GLOBAL_MARKET phình to vô tận theo thời gian khi token bị delist
+            const freshIds = new Set(resTot.data.data.map(t => t.alphaId).filter(Boolean));
+            freshIds.add('_STATS'); // giữ lại _STATS
+            for (const id of Object.keys(GLOBAL_MARKET)) {
+                if (!freshIds.has(id)) delete GLOBAL_MARKET[id];
+            }
 
         } 
     } catch (e) { 
