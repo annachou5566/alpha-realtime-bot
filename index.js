@@ -812,7 +812,6 @@ async function loopRealtime() {
             }); 
 
             GLOBAL_MARKET['_STATS'] = MARKET_VOL_HISTORY;
-            await writeCompetitionLive(); // 0 API call mới — chỉ đọc RAM, write R2 ~500 bytes
 
             // [RAM FIX] Xóa token khỏi GLOBAL_MARKET nếu không còn trong Binance bulk response
             // Tránh GLOBAL_MARKET phình to vô tận theo thời gian khi token bị delist
@@ -1003,50 +1002,6 @@ app.get('/api/smart-money', async (req, res) => {
         return res.status(error.response ? error.response.status : 500).json({ success: false });
     }
 });
-
-// =====================================================================
-// 🏆 COMPETITION LIVE — Ghi market_analysis lên R2 mỗi khi loopRealtime chạy
-// Dùng data đã tính sẵn trong GLOBAL_MARKET — 0 API call mới
-// Bandwidth thêm: ~500 bytes/phút = ~22MB/tháng (Service-Initiated)
-// =====================================================================
-async function writeCompetitionLive() {
-    const activeIds = Object.keys(ACTIVE_CONFIG);
-    if (!activeIds.length) return;
-
-    const liveData = {};
-    activeIds.forEach(id => {
-        const market = GLOBAL_MARKET[id];
-        const config = ACTIVE_CONFIG[id];
-        if (!market || !config?.contract) return;
-
-        const a = market.analysis;
-        if (!a) return;
-
-        liveData[config.contract.toLowerCase().trim()] = {
-            sp:  +(a.speed   || 0).toFixed(2),
-            tkt: +(a.ticket  || 0).toFixed(2),
-            spd: +(a.spread  || 0).toFixed(4),
-            tr:  +(a.trend   || 0).toFixed(4),
-            dr:  +(a.drop    || 0).toFixed(4),
-            fl:  +(a.netFlow || 0).toFixed(2),
-            p:   +(market.p  || 0),
-        };
-    });
-
-    if (!Object.keys(liveData).length) return;
-
-    try {
-        await s3Client.send(new PutObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: 'competition-live.json',
-            Body: JSON.stringify({ ts: Date.now(), d: liveData }),
-            ContentType: 'application/json',
-            CacheControl: 'no-cache, no-store, must-revalidate',
-        }));
-    } catch (e) {
-        console.warn('⚠️ competition-live R2:', e.message);
-    }
-}
 
 // =====================================================================
 // 🚀 START SERVER
