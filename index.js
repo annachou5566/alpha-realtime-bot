@@ -723,11 +723,14 @@ async function loopRealtime() {
                     const lastData = history[history.length - 1];
                     if (rollVolTot >= lastData.v) {
                         tickVol3s = rollVolTot - lastData.v;
-                        tickTx3s = currentTx - lastData.tx;
+                        tickTx3s = Math.max(0, currentTx - lastData.tx);
                         if (currentPrice >= lastData.p) buyVol3s = tickVol3s;
                         else sellVol3s = tickVol3s;
                     } else {
-                        history = []; 
+                        // Vol giảm (midnight UTC rollover hoặc token ít giao dịch)
+                        // Bỏ qua tick này, KHÔNG reset history — giữ lại dữ liệu cũ
+                        TOKEN_METRICS_HISTORY[id] = history.filter(h => currentTs - h.ts <= 60000);
+                        return; 
                     }
                 }
                 history.push({ ts: currentTs, p: currentPrice, v: rollVolTot, tx: currentTx, buyV: buyVol3s, sellV: sellVol3s, tickTx: tickTx3s });
@@ -812,6 +815,7 @@ async function loopRealtime() {
             }); 
 
             GLOBAL_MARKET['_STATS'] = MARKET_VOL_HISTORY;
+            await writeCompetitionLive(); // 0 API call mới — chỉ đọc RAM, write R2 ~500 bytes
 
             // [RAM FIX] Xóa token khỏi GLOBAL_MARKET nếu không còn trong Binance bulk response
             // Tránh GLOBAL_MARKET phình to vô tận theo thời gian khi token bị delist
@@ -1002,6 +1006,84 @@ app.get('/api/smart-money', async (req, res) => {
         return res.status(error.response ? error.response.status : 500).json({ success: false });
     }
 });
+
+// =====================================================================
+// 🏆 COMPETITION LIVE — Ghi market_analysis lên R2 mỗi khi loopRealtime chạy
+// Fix: dùng smoothed cache riêng để không bị ảnh hưởng khi TOKEN_METRICS_HISTORY reset
+// 0 API call mới — chỉ đọc GLOBAL_MARKET đã có trong RAM
+// =====================================================================
+const _CL_SMOOTH = {}; // { alphaId: { speed, ticket, spread, trend, drop, netFlow, age } }
+const _CL_MAX_AGE = 5; // Giữ giá trị cũ tối đa 5 vòng (~5 phút) trước khi về 0
+
+function _clSmooth(id, key, newVal) {
+    if (!_CL_SMOOTH[id]) _CL_SMOOTH[id] = {};
+    const s = _CL_SMOOTH[id];
+    if (!s[key]) s[key] = { val: 0, age: 0 };
+    const entry = s[key];
+    if (newVal !== undefined && !isNaN(newVal) && newVal !== 0) {
+        entry.val = newVal;
+        entry.age = 0;
+    } else {
+        entry.age++;
+        if (entry.age > _CL_MAX_AGE) entry.val = 0;
+    }
+    return entry.val;
+}
+
+async function writeCompetitionLive() {
+    const activeIds = Object.keys(ACTIVE_CONFIG);
+    if (!activeIds.length) return;
+
+    const liveData = {};
+
+    activeIds.forEach(id => {
+        const market = GLOBAL_MARKET[id];
+        const config = ACTIVE_CONFIG[id];
+        if (!market || !config?.contract) return;
+
+        const a = market.analysis || {};
+
+        // Smooth từng chỉ số — giữ giá trị hợp lệ cuối nếu vòng hiện tại bị 0
+        // (xảy ra khi TOKEN_METRICS_HISTORY reset do vol giảm lúc midnight UTC)
+        const speed   = _clSmooth(id, 'speed',   parseFloat(a.speed   || 0));
+        const ticket  = _clSmooth(id, 'ticket',  parseFloat(a.ticket  || 0));
+        const trend   = _clSmooth(id, 'trend',   parseFloat(a.trend   || 0));
+        const drop    = _clSmooth(id, 'drop',    parseFloat(a.drop    || 0));
+        const netFlow = _clSmooth(id, 'netFlow', parseFloat(a.netFlow || 0));
+
+        // Spread: server chỉ có 1 price/phút → thường = 0
+        // Dùng spread từ history của token nếu có, không thì giữ giá trị cũ
+        const spreadRaw = parseFloat(a.spread || 0);
+        const spread = _clSmooth(id, 'spread', spreadRaw > 0 ? spreadRaw : undefined);
+
+        const contract = config.contract.toLowerCase().trim();
+        if (!contract) return;
+
+        liveData[contract] = {
+            sp:  +speed.toFixed(2),
+            tkt: +ticket.toFixed(2),
+            spd: +spread.toFixed(4),
+            tr:  +trend.toFixed(4),
+            dr:  +drop.toFixed(4),
+            fl:  +netFlow.toFixed(2),
+            p:   +(market.p || 0),
+        };
+    });
+
+    if (!Object.keys(liveData).length) return;
+
+    try {
+        await s3Client.send(new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: 'competition-live.json',
+            Body: JSON.stringify({ ts: Date.now(), d: liveData }),
+            ContentType: 'application/json',
+            CacheControl: 'no-cache, no-store, must-revalidate',
+        }));
+    } catch (e) {
+        console.warn('⚠️ competition-live R2:', e.message);
+    }
+}
 
 // =====================================================================
 // 🚀 START SERVER
