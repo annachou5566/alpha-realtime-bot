@@ -784,32 +784,34 @@ async function loopRealtime() {
                 const limitTxAccumulated = parseFloat(base.base_limit_tx || 0) + realTx; 
                 const totalTxAccumulated = parseFloat(base.base_total_tx || 0) + realTx;
 
-                const aiResult = calculateAiPrediction(config, {
-                    totalAccumulated, 
-                    limitAccumulated, 
-                    limitTx: limitTxAccumulated, 
-                    totalTx: totalTxAccumulated, 
-                    analysis: GLOBAL_MARKET[id].analysis
-                });
+                // [PREDICTION FIX] Render KHÔNG tự tính ai_prediction nữa.
+                // Supabase cron là nguồn duy nhất — có đầy đủ min_vol, không conflict.
+                // Render chỉ cập nhật accumulated volumes để Supabase cron tính chính xác hơn.
+                const existingAi = ACTIVE_CONFIG[id]?.ai_prediction || GLOBAL_MARKET[id]?.ai_prediction || null;
+                if (existingAi) {
+                    GLOBAL_MARKET[id].ai_prediction = existingAi;
+                }
 
-                GLOBAL_MARKET[id].ai_prediction = aiResult;
                 GLOBAL_MARKET[id].effectiveTodayVol = effectiveTodayVol;
                 GLOBAL_MARKET[id].limitAccumulated = limitAccumulated;
                 GLOBAL_MARKET[id].totalAccumulated = totalAccumulated;
 
-                if (aiResult.is_finalized) {
-                    const historyArr = base.history_total ? [...base.history_total] : [];
-                    const existingToday = historyArr.find(h => h.date === nowStr);
-                    if (existingToday) existingToday.vol = effectiveTodayVol;
-                    else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
-
-                    finalizeTournament(id, { 
-                        totalAccumulated, 
-                        limitAccumulated, 
-                        limitTx: limitTxAccumulated, 
-                        totalTx: totalTxAccumulated,
-                        historyArr: historyArr 
-                    }, aiResult);
+                // Finalize vẫn do Supabase cron xử lý khi ghi FINALIZED vào DB,
+                // Render chỉ cần phản chiếu status_label từ ACTIVE_CONFIG.
+                const isNowFinalized = existingAi?.status_label === 'FINALIZED';
+                if (isNowFinalized && ACTIVE_CONFIG[id]) {
+                    // Chuyển sang history, không tự ghi Supabase nữa
+                    if (!HISTORY_CACHE[id]) {
+                        const historyArr = base.history_total ? [...base.history_total] : [];
+                        const existingToday = historyArr.find(h => h.date === nowStr);
+                        if (existingToday) existingToday.vol = effectiveTodayVol;
+                        else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
+                        HISTORY_CACHE[id] = { ...ACTIVE_CONFIG[id], real_vol_history: historyArr };
+                    }
+                    delete ACTIVE_CONFIG[id];
+                    delete PREDICTION_SMOOTHING_CACHE[id];
+                    delete TOKEN_METRICS_HISTORY[id];
+                    console.log(`🏁 [Render] Phản chiếu FINALIZED từ Supabase: ${id}`);
                 }
 
             }); 
