@@ -668,7 +668,7 @@ async function loopRealtime() {
                 });
             }
 
-            resTot.data.data.forEach(t => {
+            for (const t of resTot.data.data) {
                 const id = t.alphaId;
                 if (!id) return;
                 
@@ -848,7 +848,7 @@ async function loopRealtime() {
                     console.log(`🏁 [Render] Auto-finalized: ${id}`);
                 }
 
-            }); 
+            }
 
             GLOBAL_MARKET['_STATS'] = MARKET_VOL_HISTORY;
             await writeCompetitionLive(); // 0 API call mới — chỉ đọc RAM, write R2 ~500 bytes
