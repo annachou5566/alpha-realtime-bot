@@ -798,20 +798,54 @@ async function loopRealtime() {
 
                 // Finalize vẫn do Supabase cron xử lý khi ghi FINALIZED vào DB,
                 // Render chỉ cần phản chiếu status_label từ ACTIVE_CONFIG.
-                const isNowFinalized = existingAi?.status_label === 'FINALIZED';
+                // Tự động finalize khi end time đã qua — không cần chờ Supabase cron
+                const endDateStr = base.end || '';
+                let endTimeStr2 = base.endTime || '13:00';
+                if (endTimeStr2.length === 5) endTimeStr2 += ':00';
+                const endDateObj = endDateStr ? new Date(`${endDateStr}T${endTimeStr2}Z`) : null;
+                const isTimeUp = endDateObj && now >= endDateObj;
+
+                const isNowFinalized = existingAi?.status_label === 'FINALIZED' || isTimeUp;
                 if (isNowFinalized && ACTIVE_CONFIG[id]) {
-                    // Chuyển sang history, không tự ghi Supabase nữa
                     if (!HISTORY_CACHE[id]) {
                         const historyArr = base.history_total ? [...base.history_total] : [];
                         const existingToday = historyArr.find(h => h.date === nowStr);
                         if (existingToday) existingToday.vol = effectiveTodayVol;
                         else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
-                        HISTORY_CACHE[id] = { ...ACTIVE_CONFIG[id], real_vol_history: historyArr };
+
+                        const finalEntry = {
+                            ...ACTIVE_CONFIG[id],
+                            total_accumulated_volume: totalAccumulated,
+                            limit_accumulated_volume: limitAccumulated,
+                            real_vol_history: historyArr,
+                            ai_prediction: {
+                                ...(existingAi || {}),
+                                status_label: 'FINALIZED',
+                                last_calc: Date.now()
+                            },
+                            last_updated_ts: Date.now()
+                        };
+
+                        HISTORY_CACHE[id] = finalEntry;
+
+                        // Ghi R2 ngay lập tức — không chờ GitHub cron
+                        try {
+                            const cmd = new PutObjectCommand({
+                                Bucket: process.env.R2_BUCKET_NAME,
+                                Key: HISTORY_FILE_KEY,
+                                Body: JSON.stringify(HISTORY_CACHE),
+                                ContentType: 'application/json'
+                            });
+                            await s3Client.send(cmd);
+                            console.log(`✅ [AUTO-FINALIZE] ${id} → R2 updated immediately`);
+                        } catch (e) {
+                            console.warn(`⚠️ R2 write failed for ${id}:`, e.message);
+                        }
                     }
                     delete ACTIVE_CONFIG[id];
                     delete PREDICTION_SMOOTHING_CACHE[id];
                     delete TOKEN_METRICS_HISTORY[id];
-                    console.log(`🏁 [Render] Phản chiếu FINALIZED từ Supabase: ${id}`);
+                    console.log(`🏁 [Render] Auto-finalized: ${id}`);
                 }
 
             }); 
