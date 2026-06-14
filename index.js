@@ -1209,3 +1209,77 @@ app.get('/api/full-depth', async (req, res) => {
         });
     }
 });
+
+// =======================================================
+// 🌐 CRYPTO MARKET — SPOT TICKER 24H (RAM CACHE 30s)
+// Binance api.binance.com chặn Cloudflare IPs → 403
+// Render server IP không bị chặn → proxy qua đây
+// =======================================================
+const SPOT_TICKER_CACHE = { data: null, ts: 0 };
+
+app.get('/api/spot-tickers', async (req, res) => {
+    const now = Date.now();
+    if (SPOT_TICKER_CACHE.data && now - SPOT_TICKER_CACHE.ts < 30000) {
+        res.setHeader('Cache-Control', 'public, max-age=30');
+        return res.json(SPOT_TICKER_CACHE.data);
+    }
+    try {
+        const response = await axios.get(
+            'https://api.binance.com/api/v3/ticker/24hr?type=MINI',
+            { headers: FAKE_HEADERS, timeout: 10000 }
+        );
+        if (!Array.isArray(response.data)) {
+            return res.status(502).json({ error: 'Binance returned unexpected format' });
+        }
+        SPOT_TICKER_CACHE.data = response.data;
+        SPOT_TICKER_CACHE.ts   = now;
+        res.setHeader('Cache-Control', 'public, max-age=30');
+        res.json(response.data);
+    } catch (error) {
+        const status = error.response?.status || 500;
+        // Trả cache cũ nếu có, tránh blank UI
+        if (SPOT_TICKER_CACHE.data) {
+            res.setHeader('Cache-Control', 'public, max-age=10');
+            return res.json(SPOT_TICKER_CACHE.data);
+        }
+        res.status(status).json({ error: `Spot ticker error: ${status}` });
+    }
+});
+
+// =======================================================
+// 📈 CRYPTO MARKET — SPOT KLINES (RAM CACHE 30s)
+// Chart candlestick cho Spot pairs
+// =======================================================
+const SPOT_KLINES_CACHE = {};
+
+app.get('/api/spot-klines', async (req, res) => {
+    const { symbol, interval = '1h', limit = 300 } = req.query;
+
+    if (!symbol || !/^[A-Z0-9]{2,20}$/.test(symbol)) {
+        return res.status(400).json({ error: 'Invalid symbol' });
+    }
+    if (!/^(1s|1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w|1M)$/.test(interval)) {
+        return res.status(400).json({ error: 'Invalid interval' });
+    }
+
+    const cacheKey = `${symbol}_${interval}_${limit}`;
+    const now = Date.now();
+    if (SPOT_KLINES_CACHE[cacheKey] && now - SPOT_KLINES_CACHE[cacheKey].ts < 30000) {
+        res.setHeader('Cache-Control', 'public, max-age=30');
+        return res.json(SPOT_KLINES_CACHE[cacheKey].data);
+    }
+
+    try {
+        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${parseInt(limit)}`;
+        const response = await axios.get(url, { headers: FAKE_HEADERS, timeout: 8000 });
+        if (!Array.isArray(response.data)) {
+            return res.status(502).json({ error: 'Unexpected klines format' });
+        }
+        SPOT_KLINES_CACHE[cacheKey] = { ts: now, data: response.data };
+        res.setHeader('Cache-Control', 'public, max-age=30');
+        res.json(response.data);
+    } catch (error) {
+        const status = error.response?.status || 500;
+        res.status(status).json({ error: `Spot klines error: ${status}` });
+    }
+});
