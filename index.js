@@ -1283,3 +1283,55 @@ app.get('/api/spot-klines', async (req, res) => {
         res.status(status).json({ error: `Spot klines error: ${status}` });
     }
 });
+
+// =======================================================
+// 🔥 CRYPTO MARKET — FUTURES TICKER 24H (RAM CACHE 30s)
+// /fapi/v1/ticker/24hr toàn bộ symbols từ Cloudflare → 403/timeout
+// → Proxy qua Render (Binance không chặn Render IPs)
+// =======================================================
+const FUTURES_TICKER_CACHE = { data: null, ts: 0 };
+
+app.get('/api/futures-tickers', async (req, res) => {
+    const now = Date.now();
+    if (FUTURES_TICKER_CACHE.data && now - FUTURES_TICKER_CACHE.ts < 30000) {
+        res.setHeader('Cache-Control', 'public, max-age=30');
+        return res.json(FUTURES_TICKER_CACHE.data);
+    }
+    try {
+        const [tickerRes, fundingRes] = await Promise.allSettled([
+            axios.get('https://fapi.binance.com/fapi/v1/ticker/24hr',
+                { headers: FAKE_HEADERS, timeout: 12000 }),
+            axios.get('https://fapi.binance.com/fapi/v1/premiumIndex',
+                { headers: FAKE_HEADERS, timeout: 10000 })
+        ]);
+
+        if (tickerRes.status !== 'fulfilled' || !Array.isArray(tickerRes.value.data)) {
+            const s = tickerRes.reason?.response?.status || 500;
+            if (FUTURES_TICKER_CACHE.data) return res.json(FUTURES_TICKER_CACHE.data);
+            return res.status(s).json({ error: `Futures ticker upstream error: ${s}` });
+        }
+
+        // Build funding map
+        const fundMap = {};
+        if (fundingRes.status === 'fulfilled' && Array.isArray(fundingRes.value.data)) {
+            fundingRes.value.data.forEach(p => {
+                fundMap[p.symbol] = parseFloat(p.lastFundingRate || 0) * 100;
+            });
+        }
+
+        // Merge funding rate into ticker
+        const merged = tickerRes.value.data
+            .filter(t => t.symbol.endsWith('USDT'))
+            .map(t => ({ ...t, fundingRate: fundMap[t.symbol] ?? 0 }));
+
+        FUTURES_TICKER_CACHE.data = merged;
+        FUTURES_TICKER_CACHE.ts   = now;
+
+        res.setHeader('Cache-Control', 'public, max-age=30');
+        res.json(merged);
+
+    } catch (error) {
+        if (FUTURES_TICKER_CACHE.data) return res.json(FUTURES_TICKER_CACHE.data);
+        res.status(500).json({ error: `Futures tickers error: ${error.message}` });
+    }
+});
