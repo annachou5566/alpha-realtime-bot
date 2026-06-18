@@ -904,7 +904,7 @@ app.get('/api/competition-data', (req, res) => {
         if (existingToday) existingToday.vol = effectiveTodayVol;
         else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
 
-        const aiResult = real.ai_prediction || { label: "WAIT...", target: 0, delta: 0, is_finalized: false };
+        const aiResult = real.ai_prediction || config.ai_prediction || { label: "WAIT...", target: 0, delta: 0, is_finalized: false };
 
         responseData[alphaId] = {
             ...config,
