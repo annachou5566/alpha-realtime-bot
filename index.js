@@ -670,7 +670,7 @@ async function loopRealtime() {
 
             for (const t of resTot.data.data) {
                 const id = t.alphaId;
-                if (!id) return;
+                if (!id) continue; // [FIX] return làm thoát luôn cả vòng loopRealtime() ở token đầu tiên thiếu alphaId
                 
                 let rollVolTot = parseFloat(t.volume24h || 0);
                 let rollVolLim = limitMap[id] || 0;
@@ -714,7 +714,11 @@ async function loopRealtime() {
                     v: { dt: dailyTot, dl: dailyLim } 
                 };
 
-                if (!ACTIVE_CONFIG[id]) return; 
+                // [FIX] return ở đây làm GLOBAL_MARKET chỉ còn 1-vài token: gặp token đầu tiên
+                // không có giải đấu active là thoát luôn cả hàm, bỏ qua toàn bộ token còn lại
+                // trong mảng — trong khi ý đồ chỉ là "bỏ qua phần tính metrics riêng cho giải đấu",
+                // không phải "ngừng xử lý mọi token khác".
+                if (!ACTIVE_CONFIG[id]) continue; 
 
                 let history = TOKEN_METRICS_HISTORY[id] || [];
                 let buyVol3s = 0, sellVol3s = 0, tickVol3s = 0, tickTx3s = 0;
@@ -904,7 +908,7 @@ app.get('/api/competition-data', (req, res) => {
         if (existingToday) existingToday.vol = effectiveTodayVol;
         else historyArr.push({ date: nowStr, vol: effectiveTodayVol });
 
-        const aiResult = real.ai_prediction || config.ai_prediction || { label: "WAIT...", target: 0, delta: 0, is_finalized: false };
+        const aiResult = real.ai_prediction || { label: "WAIT...", target: 0, delta: 0, is_finalized: false };
 
         responseData[alphaId] = {
             ...config,
