@@ -6,8 +6,8 @@ const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/clien
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https'); 
 
-// ⚡ BỎ THƯ VIỆN WEBSOCKET ĐỂ ÉP XUNG BĂNG THÔ
 const http = require('http');
+const WebSocket = require('ws'); // dùng cho Spot Ticker stream từ Binance
 
 axios.defaults.httpsAgent = new https.Agent({
     servername: 'www.binance.com' 
@@ -1146,6 +1146,9 @@ server.listen(PORT, async () => {
     // Frontend dùng WebSocket Binance trực tiếp cho giá realtime nên 60s vẫn đủ
     loopRealtime(); 
     setInterval(loopRealtime, 60000); 
+
+    // Spot Ticker — WS stream thay REST, không bao giờ bị ban api.binance.com
+    connectSpotTickerWS();
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
@@ -1218,43 +1221,70 @@ app.get('/api/full-depth', async (req, res) => {
 });
 
 // =======================================================
-// 🌐 CRYPTO MARKET — SPOT TICKER 24H (RAM CACHE 30s)
-// Binance api.binance.com chặn Cloudflare IPs → 403
-// Render server IP không bị chặn → proxy qua đây
+// 🌐 CRYPTO MARKET — SPOT TICKER 24H (WEBSOCKET STREAM)
+// -------------------------------------------------------
+// TRƯỚC: REST poll api.binance.com mỗi 30s → tích lũy → ban
+// SAU:   1 WS connection vĩnh viễn, Binance push mỗi giây
+//        Không có REST call ra ngoài → không có rate limit
+//        → không bao giờ bị ban vì spot tickers nữa
 // =======================================================
 const SPOT_TICKER_CACHE = { data: null, ts: 0 };
 
-app.get('/api/spot-tickers', async (req, res) => {
-    const now = Date.now();
-    if (SPOT_TICKER_CACHE.data && now - SPOT_TICKER_CACHE.ts < 30000) {
-        res.setHeader('Cache-Control', 'public, max-age=30');
-        return res.json(SPOT_TICKER_CACHE.data);
+function connectSpotTickerWS() {
+    const sock = new WebSocket('wss://stream.binance.com:9443/ws/!miniTicker@arr');
+
+    sock.on('open', () => {
+        console.log('🟢 [SPOT-WS] Connected — nhận live mini-ticker từ Binance');
+    });
+
+    sock.on('message', raw => {
+        try {
+            const tickers = JSON.parse(raw);
+            // Guard: miniTicker arr thường có 2000+ symbols — nếu nhỏ hơn là sai stream
+            if (Array.isArray(tickers) && tickers.length > 100) {
+                SPOT_TICKER_CACHE.data = tickers.map(t => ({
+                    symbol       : t.s,
+                    lastPrice    : t.c,
+                    openPrice    : t.o,
+                    highPrice    : t.h,
+                    lowPrice     : t.l,
+                    volume       : t.v,   // base asset volume
+                    quoteVolume  : t.q,   // quote (USDT) volume
+                    count        : t.n,   // number of trades
+                }));
+                SPOT_TICKER_CACHE.ts = Date.now();
+            }
+        } catch(e) {}
+    });
+
+    sock.on('close', (code, reason) => {
+        console.warn(`🔴 [SPOT-WS] Disconnected (${code}), reconnect in 5s...`);
+        setTimeout(connectSpotTickerWS, 5000);
+    });
+
+    sock.on('error', err => {
+        console.error(`⚠️ [SPOT-WS] Error: ${err.message}`);
+        sock.terminate(); // triggers 'close' → reconnect
+    });
+
+    // Binance WS tự ngắt sau 24h nếu không ping — gửi ping mỗi 3 phút để giữ kết nối
+    const pingInterval = setInterval(() => {
+        if (sock.readyState === WebSocket.OPEN) {
+            sock.ping();
+        } else {
+            clearInterval(pingInterval);
+        }
+    }, 3 * 60 * 1000);
+}
+
+// Route giữ nguyên interface — chỉ serve RAM cache thay vì gọi REST
+app.get('/api/spot-tickers', (req, res) => {
+    if (!SPOT_TICKER_CACHE.data) {
+        // WS chưa nhận được data lần đầu (mới khởi động < vài giây)
+        return res.status(503).json({ error: 'Spot ticker stream warming up, retry in 3s' });
     }
-    try {
-        const response = await axios.get(
-            'https://api.binance.com/api/v3/ticker/24hr?type=MINI',
-            { headers: FAKE_HEADERS, timeout: 10000 }
-        );
-        if (!Array.isArray(response.data)) {
-            return res.status(502).json({ error: 'Binance returned unexpected format' });
-        }
-        SPOT_TICKER_CACHE.data = response.data;
-        SPOT_TICKER_CACHE.ts   = now;
-        res.setHeader('Cache-Control', 'public, max-age=30');
-        res.json(response.data);
-    } catch (error) {
-        const status = error.response?.status || 500;
-        // [BAN FIX] Log rõ 429/418 để monitor — đây là dấu hiệu IP ban sắp/đã xảy ra
-        if (status === 429 || status === 418) {
-            console.warn(`🚨 [SPOT-TICKERS] Binance ${status} — IP đang bị rate-limit/ban. Serve stale cache.`);
-        }
-        // Trả cache cũ nếu có, tránh blank UI
-        if (SPOT_TICKER_CACHE.data) {
-            res.setHeader('Cache-Control', 'public, max-age=10');
-            return res.json(SPOT_TICKER_CACHE.data);
-        }
-        res.status(status).json({ error: `Spot ticker error: ${status}` });
-    }
+    res.setHeader('Cache-Control', 'public, max-age=5');
+    res.json(SPOT_TICKER_CACHE.data);
 });
 
 // =======================================================
