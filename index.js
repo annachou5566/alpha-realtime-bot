@@ -171,8 +171,11 @@ async function fetch14DaysHistoryBapi() {
 
         console.log(`🎯 Tìm thấy ${tokensToFetch.length} tokens. Bắt đầu cào Klines 1D...`);
 
-        for (let i = 0; i < tokensToFetch.length; i += 10) {
-            const chunk = tokensToFetch.slice(i, i + 10);
+        // [BAN FIX] Giảm concurrency 10→3 và delay 300ms→1000ms
+        // Lý do: burst 10 req đồng thời × N batch → Binance thấy ~33 req/giây → 429 → 418 (IP ban)
+        // 3 concurrent × 1000ms delay = ~3 req/giây — đủ chậm để không trigger rate-limit
+        for (let i = 0; i < tokensToFetch.length; i += 3) {
+            const chunk = tokensToFetch.slice(i, i + 3);
             await Promise.all(chunk.map(async (t) => {
                 try {
                     let chainId = t.chainId || (t.chain === 'BSC' ? 56 : (t.chain === 'ETH' ? 1 : 56));
@@ -193,7 +196,7 @@ async function fetch14DaysHistoryBapi() {
                     }
                 } catch (e) { }
             }));
-            await new Promise(resolve => setTimeout(resolve, 300)); 
+            await new Promise(resolve => setTimeout(resolve, 1000)); 
         }
 
         let tempArr = [];
@@ -1241,6 +1244,10 @@ app.get('/api/spot-tickers', async (req, res) => {
         res.json(response.data);
     } catch (error) {
         const status = error.response?.status || 500;
+        // [BAN FIX] Log rõ 429/418 để monitor — đây là dấu hiệu IP ban sắp/đã xảy ra
+        if (status === 429 || status === 418) {
+            console.warn(`🚨 [SPOT-TICKERS] Binance ${status} — IP đang bị rate-limit/ban. Serve stale cache.`);
+        }
         // Trả cache cũ nếu có, tránh blank UI
         if (SPOT_TICKER_CACHE.data) {
             res.setHeader('Cache-Control', 'public, max-age=10');
