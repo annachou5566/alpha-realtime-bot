@@ -2,7 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const zlib = require('zlib');
+const { promisify } = require('util');
+const gzipAsync   = promisify(zlib.gzip);
+const gunzipAsync = promisify(zlib.gunzip);
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https'); 
 
@@ -1131,6 +1135,124 @@ async function writeCompetitionLive() {
 // =====================================================================
 // 🚀 START SERVER
 // =====================================================================
+// ============================================================
+// 🔴 TICK CACHE — AGGTRADE WEBSOCKET + R2 ROLLING 48H
+// 5 coin pilot: BTC, ETH, BNB, SOL, XRP
+// 1 kết nối WS combined stream duy nhất (an toàn, đúng chuẩn Binance)
+// Buffer RAM → flush R2 mỗi giờ → xóa file cũ hơn 48h tự động
+// ============================================================
+
+const TICK_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+const TICK_BUFFER  = {};
+TICK_SYMBOLS.forEach(s => { TICK_BUFFER[s] = []; });
+
+// Kết nối aggTrade combined stream — 1 WS cho 5 coin
+// Binance hỗ trợ tối đa 1024 streams/connection, ta chỉ dùng 5
+function connectAggTradeWS() {
+    const streams = TICK_SYMBOLS
+        .map(s => `${s.toLowerCase()}@aggTrade`)
+        .join('/');
+    const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+
+    const sock = new WebSocket(url);
+
+    sock.on('open', () => {
+        console.log(`🟢 [AGG-WS] Connected — aggTrade: ${TICK_SYMBOLS.join(', ')}`);
+    });
+
+    sock.on('message', raw => {
+        try {
+            // Combined stream: { stream: "btcusdt@aggTrade", data: {...} }
+            const msg  = JSON.parse(raw);
+            const data = msg.data;
+            if (!data || data.e !== 'aggTrade') return;
+            const symbol = data.s;
+            if (!TICK_BUFFER[symbol]) return;
+            // Lưu tối thiểu: [timestamp, price, qty, isSell]
+            TICK_BUFFER[symbol].push([
+                data.T,              // timestamp ms
+                data.p,              // price (string)
+                data.q,              // qty (string)
+                data.m ? 1 : 0       // 1=sell, 0=buy
+            ]);
+        } catch (e) { /* bỏ qua parse lỗi */ }
+    });
+
+    sock.on('close', (code) => {
+        console.warn(`🔴 [AGG-WS] Disconnected (${code}), reconnect in 5s...`);
+        setTimeout(connectAggTradeWS, 5000);
+    });
+
+    sock.on('error', err => {
+        console.error(`⚠️ [AGG-WS] Error: ${err.message}`);
+        sock.terminate(); // triggers 'close' → tự reconnect
+    });
+
+    // Ping mỗi 3 phút — cùng pattern connectSpotTickerWS()
+    const pingInterval = setInterval(() => {
+        if (sock.readyState === WebSocket.OPEN) {
+            sock.ping();
+        } else {
+            clearInterval(pingInterval);
+        }
+    }, 3 * 60 * 1000);
+}
+
+// Flush buffer vào R2 mỗi giờ
+async function flushTickToR2() {
+    const now     = Date.now();
+    const hourTag = new Date(now).toISOString().slice(0, 13); // "2026-06-21T14"
+    const cutoff  = now - 48 * 60 * 60 * 1000;
+
+    for (const symbol of TICK_SYMBOLS) {
+        const rows = TICK_BUFFER[symbol];
+        if (rows.length === 0) continue;
+
+        // Snapshot + reset ngay để không block buffer mới
+        TICK_BUFFER[symbol] = [];
+
+        try {
+            const compressed = await gzipAsync(Buffer.from(JSON.stringify(rows)));
+            await s3Client.send(new PutObjectCommand({
+                Bucket      : process.env.R2_BUCKET_NAME,
+                Key         : `tick-cache/${symbol}/${hourTag}.json.gz`,
+                Body        : compressed,
+                ContentType : 'application/gzip',
+            }));
+            console.log(`✅ [TICK-R2] ${symbol} ${hourTag} — ${rows.length} trades, ${(compressed.length/1024).toFixed(1)} KB`);
+        } catch (e) {
+            console.error(`⚠️ [TICK-R2] Flush ${symbol} lỗi:`, e.message);
+            // Đưa lại buffer nếu flush thất bại — không mất data
+            TICK_BUFFER[symbol] = rows.concat(TICK_BUFFER[symbol]);
+        }
+    }
+
+    // Dọn file cũ hơn 48h
+    try {
+        const list = await s3Client.send(new ListObjectsV2Command({
+            Bucket : process.env.R2_BUCKET_NAME,
+            Prefix : 'tick-cache/',
+        }));
+        if (list.Contents && list.Contents.length > 0) {
+            for (const obj of list.Contents) {
+                const match = obj.Key.match(/(\d{4}-\d{2}-\d{2}T\d{2})\.json\.gz$/);
+                if (!match) continue;
+                const fileMs = new Date(match[1] + ':00:00Z').getTime();
+                if (fileMs < cutoff) {
+                    await s3Client.send(new DeleteObjectCommand({
+                        Bucket : process.env.R2_BUCKET_NAME,
+                        Key    : obj.Key,
+                    }));
+                    console.log(`🗑️ [TICK-R2] Xóa cũ: ${obj.Key}`);
+                }
+            }
+        }
+    } catch (e) {
+        console.warn(`⚠️ [TICK-R2] Dọn file cũ lỗi:`, e.message);
+    }
+}
+
+// ============================================================
 server.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
     
@@ -1149,6 +1271,11 @@ server.listen(PORT, async () => {
 
     // Spot Ticker — WS stream thay REST, không bao giờ bị ban api.binance.com
     connectSpotTickerWS();
+
+    // AggTrade Tick Cache — 5 coin pilot, rolling 48h → R2
+    connectAggTradeWS();
+    flushTickToR2(); // flush ngay khi khởi động (lấy data còn trong buffer nếu có)
+    setInterval(flushTickToR2, 60 * 60 * 1000); // mỗi giờ flush 1 lần
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
