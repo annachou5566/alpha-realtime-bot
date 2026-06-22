@@ -1229,6 +1229,12 @@ app.get('/api/full-depth', async (req, res) => {
 //        → không bao giờ bị ban vì spot tickers nữa
 // =======================================================
 const SPOT_TICKER_CACHE = { data: null, ts: 0 };
+// 🆕 (2026) Binance giờ gửi !miniTicker@arr theo từng đợt nhỏ xoay vòng
+// (~100-135 symbol/message) thay vì 1 mảng 2000+ symbol/message như trước.
+// Map gộp dồn theo symbol — mỗi message chỉ CẬP NHẬT phần symbol nó mang
+// theo, không xoá các symbol khác đã có từ trước → cache luôn đầy đủ thay
+// vì chỉ còn đúng batch cuối cùng nhận được.
+const SPOT_TICKER_MAP = new Map(); // symbol -> { ...ticker, _seen }
 
 function connectSpotTickerWS() {
     const sock = new WebSocket('wss://stream.binance.com:9443/ws/!miniTicker@arr');
@@ -1240,9 +1246,11 @@ function connectSpotTickerWS() {
     sock.on('message', raw => {
         try {
             const tickers = JSON.parse(raw);
-            // Guard: miniTicker arr thường có 2000+ symbols — nếu nhỏ hơn là sai stream
-            if (Array.isArray(tickers) && tickers.length > 100) {
-                SPOT_TICKER_CACHE.data = tickers.map(t => ({
+            if (!Array.isArray(tickers) || tickers.length === 0) return;
+            const now = Date.now();
+            for (const t of tickers) {
+                if (!t || !t.s) continue;
+                SPOT_TICKER_MAP.set(t.s, {
                     symbol       : t.s,
                     lastPrice    : t.c,
                     openPrice    : t.o,
@@ -1251,9 +1259,11 @@ function connectSpotTickerWS() {
                     volume       : t.v,   // base asset volume
                     quoteVolume  : t.q,   // quote (USDT) volume
                     count        : t.n,   // number of trades
-                }));
-                SPOT_TICKER_CACHE.ts = Date.now();
+                    _seen        : now,
+                });
             }
+            SPOT_TICKER_CACHE.data = Array.from(SPOT_TICKER_MAP.values());
+            SPOT_TICKER_CACHE.ts = now;
         } catch(e) {}
     });
 
@@ -1277,6 +1287,21 @@ function connectSpotTickerWS() {
     }, 3 * 60 * 1000);
 }
 
+// 🆕 Dọn định kỳ các symbol không xuất hiện trong batch nào suốt >5 phút
+// (delist khỏi Binance, hoặc đổi tên cặp) — tránh cache phình to vô hạn
+// và tránh trả về giá cũ mãi mãi cho 1 symbol đã ngừng giao dịch.
+setInterval(() => {
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    let removed = 0;
+    for (const [sym, t] of SPOT_TICKER_MAP) {
+        if (t._seen < cutoff) { SPOT_TICKER_MAP.delete(sym); removed++; }
+    }
+    if (removed > 0) {
+        SPOT_TICKER_CACHE.data = Array.from(SPOT_TICKER_MAP.values());
+        console.log(`🧹 [SPOT-WS] Dọn ${removed} symbol không thấy cập nhật >5 phút (tổng còn ${SPOT_TICKER_MAP.size})`);
+    }
+}, 60 * 1000);
+
 // Route giữ nguyên interface — chỉ serve RAM cache thay vì gọi REST
 app.get('/api/spot-tickers', (req, res) => {
     if (!SPOT_TICKER_CACHE.data) {
@@ -1284,7 +1309,8 @@ app.get('/api/spot-tickers', (req, res) => {
         return res.status(503).json({ error: 'Spot ticker stream warming up, retry in 3s' });
     }
     res.setHeader('Cache-Control', 'public, max-age=5');
-    res.json(SPOT_TICKER_CACHE.data);
+    // Bỏ field _seen (chỉ dùng nội bộ để dọn cache) trước khi trả về client
+    res.json(SPOT_TICKER_CACHE.data.map(({ _seen, ...rest }) => rest));
 });
 
 // =======================================================
