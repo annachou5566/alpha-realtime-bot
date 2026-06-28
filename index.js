@@ -1222,32 +1222,58 @@ function connectAggTradeWS() {
     }, 3 * 60 * 1000);
 }
 
-// Flush buffer vào R2 mỗi giờ
+// ── Flush buffer vào R2 theo giờ của DATA (không phải giờ flush) ──────────────
+// Fix Bug #1: group ticks theo giờ thực của từng tick → key luôn khớp với nội dung
+// Fix: GET file hiện có trên R2 rồi MERGE trước khi PUT (tránh overwrite giờ chưa đầy)
+// Fix: restore từng hour riêng lẻ thay vì restore toàn bộ symbol
 async function flushTickToR2() {
-    const now     = Date.now();
-    const hourTag = new Date(now).toISOString().slice(0, 13); // "2026-06-21T14"
-    const cutoff  = now - 48 * 60 * 60 * 1000;
+    const now    = Date.now();
+    const cutoff = now - 48 * 60 * 60 * 1000;
 
     for (const symbol of TICK_SYMBOLS) {
-        const rows = TICK_BUFFER[symbol];
-        if (rows.length === 0) continue;
+        if (TICK_BUFFER[symbol].length === 0) continue;
 
-        // Snapshot + reset ngay để không block buffer mới
-        TICK_BUFFER[symbol] = [];
+        // Snapshot ngay, reset buffer để không block tick mới đến trong lúc flush
+        const rows = TICK_BUFFER[symbol].splice(0);
 
-        try {
-            const compressed = await gzipAsync(Buffer.from(JSON.stringify(rows)));
-            await s3Client.send(new PutObjectCommand({
-                Bucket      : process.env.R2_BUCKET_NAME,
-                Key         : `tick-cache/${symbol}/${hourTag}.json.gz`,
-                Body        : compressed,
-                ContentType : 'application/gzip',
-            }));
-            console.log(`✅ [TICK-R2] ${symbol} ${hourTag} — ${rows.length} trades, ${(compressed.length/1024).toFixed(1)} KB`);
-        } catch (e) {
-            console.error(`⚠️ [TICK-R2] Flush ${symbol} lỗi:`, e.message);
-            // Đưa lại buffer nếu flush thất bại — không mất data
-            TICK_BUFFER[symbol] = rows.concat(TICK_BUFFER[symbol]);
+        // Group theo giờ của CHÍNH tick đó (không phải giờ hiện tại)
+        const byHour = {};
+        for (const row of rows) {
+            const hourMs  = Math.floor(row[0] / 3_600_000) * 3_600_000;
+            const hourTag = new Date(hourMs).toISOString().slice(0, 13); // "2026-06-21T14"
+            (byHour[hourTag] = byHour[hourTag] || []).push(row);
+        }
+
+        for (const [hourTag, hourRows] of Object.entries(byHour)) {
+            const key = `tick-cache/${symbol}/${hourTag}.json.gz`;
+            try {
+                // GET file cũ (nếu có) để merge — R2 không hỗ trợ append
+                let existing = [];
+                try {
+                    const obj = await s3Client.send(new GetObjectCommand({
+                        Bucket: process.env.R2_BUCKET_NAME, Key: key,
+                    }));
+                    const buf = Buffer.from(await obj.Body.transformToByteArray());
+                    existing = JSON.parse((await gunzipAsync(buf)).toString('utf8'));
+                } catch (_) { /* file chưa tồn tại → bỏ qua */ }
+
+                // Merge + dedup theo timestamp, sort tăng dần
+                const merged = [...existing, ...hourRows]
+                    .sort((a, b) => a[0] - b[0]);
+
+                const compressed = await gzipAsync(Buffer.from(JSON.stringify(merged)));
+                await s3Client.send(new PutObjectCommand({
+                    Bucket      : process.env.R2_BUCKET_NAME,
+                    Key         : key,
+                    Body        : compressed,
+                    ContentType : 'application/gzip',
+                }));
+                console.log(`✅ [TICK-R2] ${symbol}/${hourTag} — +${hourRows.length} trades (total ${merged.length}), ${(compressed.length/1024).toFixed(1)} KB`);
+            } catch (e) {
+                console.error(`⚠️ [TICK-R2] Flush ${symbol}/${hourTag} lỗi:`, e.message);
+                // Đưa lại đúng phần bị lỗi vào đầu buffer để flush lần sau
+                TICK_BUFFER[symbol] = hourRows.concat(TICK_BUFFER[symbol]);
+            }
         }
     }
 
@@ -1276,6 +1302,23 @@ async function flushTickToR2() {
     }
 }
 
+// ── /api/tick-live — trả ticks đang trong RAM buffer (chưa flush lên R2) ───────
+// Dùng khi frontend cần data của giờ hiện tại mà chưa có trong R2
+app.get('/api/tick-live', (req, res) => {
+    const symbol = (req.query.symbol || '').toUpperCase();
+    if (!TICK_BUFFER[symbol]) {
+        return res.status(404).json({ error: `${symbol} not in tick cache. Available: ${TICK_SYMBOLS.join(', ')}` });
+    }
+    const ticks = TICK_BUFFER[symbol];
+    res.json({
+        symbol,
+        count       : ticks.length,
+        oldest_ts   : ticks.length ? ticks[0][0]            : null,
+        newest_ts   : ticks.length ? ticks[ticks.length-1][0] : null,
+        ticks,  // [[ts_ms, price_str, qty_str, isSell], ...]
+    });
+});
+
 // ============================================================
 server.listen(PORT, async () => {
     console.log(`🚀 [Wave Alpha Core] Máy chủ đang chạy tại port ${PORT}`);
@@ -1298,8 +1341,15 @@ server.listen(PORT, async () => {
 
     // AggTrade Tick Cache — 5 coin pilot, rolling 48h → R2
     connectAggTradeWS();
-    flushTickToR2(); // flush ngay khi khởi động (lấy data còn trong buffer nếu có)
-    setInterval(flushTickToR2, 60 * 60 * 1000); // mỗi giờ flush 1 lần
+    // Flush mỗi 15 phút thay vì 1 giờ:
+    //   - Giảm data mất khi server crash (tối đa mất 15 phút thay vì 60 phút)
+    //   - Vẫn cần schedule ở :00/:15/:30/:45 để key file khớp tick-history.js
+    const msToNextQuarter = 15 * 60_000 - (Date.now() % (15 * 60_000));
+    setTimeout(() => {
+        flushTickToR2();
+        setInterval(flushTickToR2, 15 * 60 * 1000);
+    }, msToNextQuarter);
+    console.log(`⏱️ [TICK-R2] First flush in ${Math.round(msToNextQuarter/1000)}s (next :00/:15/:30/:45 UTC)`);
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
     setInterval(syncActiveConfig, 5 * 60 * 1000); 
@@ -1553,4 +1603,3 @@ app.get('/api/futures-tickers', async (req, res) => {
         res.status(500).json({ error: `Futures tickers error: ${error.message}` });
     }
 });
-
