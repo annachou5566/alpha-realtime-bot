@@ -51,12 +51,15 @@ function envInt(name, fallback, min, max) {
 }
 
 const RUNTIME = Object.freeze({
-    realtimePollMs: envInt('REALTIME_POLL_MS', 60_000, 30_000, 15 * 60_000),
+    // Edge caches market/competition payloads for five minutes. Polling the same
+    // all-token Binance payload every minute only burns Render service bandwidth.
+    realtimePollMs: envInt('REALTIME_POLL_MS', 5 * 60_000, 60_000, 15 * 60_000),
     limitRefreshMs: envInt('LIMIT_REFRESH_MS', 5 * 60_000, 60_000, 30 * 60_000),
-    configSyncMs: envInt('CONFIG_SYNC_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000),
+    configSyncMs: envInt('CONFIG_SYNC_MS', 30 * 60_000, 10 * 60_000, 60 * 60_000),
     competitionLiveWriteMs: envInt('COMPETITION_LIVE_WRITE_MS', 5 * 60_000, 60_000, 30 * 60_000),
     priceSyncMs: envInt('PRICE_SYNC_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000),
     spotTickerIdleMs: envInt('SPOT_TICKER_IDLE_MS', 2 * 60_000, 30_000, 30 * 60_000),
+    tokenListSyncMs: envInt('TOKEN_LIST_SYNC_MS', 6 * 60 * 60_000, 60 * 60_000, 24 * 60 * 60_000),
     tickCacheEnabled: String(process.env.ENABLE_TICK_CACHE || '').toLowerCase() === 'true',
 });
 
@@ -197,7 +200,7 @@ app.use((req, res, next) => {
     
     // Mở cửa tự do cho Health Check của Render (Thường gọi vào đường dẫn gốc "/")
     if (req.path === '/' || req.path === '/health') {
-        res.setHeader('x-wave-release', 'competition-price-series-v3');
+        res.setHeader('x-wave-release', 'competition-price-series-v4');
         return res.status(200).send('OK');
     }
     // [BW FIX] Đã xóa bypass API key cho /api/full-depth
@@ -258,6 +261,7 @@ let GLOBAL_MARKET = {};
 let ACTIVE_CONFIG = {};      
 let HISTORY_CACHE = {};      
 let BASE_HISTORY_DATA = {};  
+let BASE_DATA_ETAG = '';
 let START_OFFSET_CACHE = {}; 
 let SNAPSHOT_TAIL_TOTAL = {}; 
 let SNAPSHOT_TAIL_LIMIT = {}; 
@@ -653,14 +657,33 @@ async function syncActiveConfig() {
     } catch (e) { console.error("❌ Sync Active Config Error:", e.message); }
 }
 
-async function syncBaseData() {
+async function syncBaseData(options = {}) {
+    const force = options.force === true;
+    const key = 'tournaments-base.json';
     try {
-        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "tournaments-base.json" });
+        if (!force && BASE_DATA_ETAG) {
+            const head = await s3Client.send(new HeadObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: key,
+            }));
+            const nextEtag = String(head && head.ETag || '');
+            if (nextEtag && nextEtag === BASE_DATA_ETAG) {
+                console.log('✅ Base History unchanged; skipped body download.');
+                return { changed: false, etag: nextEtag };
+            }
+        }
+
+        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key });
         const resp = await s3Client.send(cmd);
         const str = await resp.Body.transformToString();
         BASE_HISTORY_DATA = JSON.parse(str);
+        BASE_DATA_ETAG = String(resp && resp.ETag || BASE_DATA_ETAG || '');
         console.log("✅ Đã tải Base History (Volume nền).");
-    } catch (e) { }
+        return { changed: true, etag: BASE_DATA_ETAG };
+    } catch (e) {
+        console.warn('⚠️ Base History sync failed:', e.message);
+        return { changed: false, error: e.message };
+    }
 }
 
 async function checkStartOffsets() {
@@ -1690,7 +1713,7 @@ server.listen(PORT, async () => {
     await syncHistoryFromR2();
     await syncPriceSeriesFromR2();
     await syncActiveConfig();
-    await syncBaseData();
+    await syncBaseData({ force: true });
     await checkStartOffsets();
     await fetch14DaysHistoryBapi(); 
     await syncTailsFromR2({ force: true });
@@ -1733,7 +1756,7 @@ server.listen(PORT, async () => {
         });
     setInterval(() => syncTournamentPriceSeries({ maxFetches: 6 }).catch(error => console.warn('Price sync:', error.message)), RUNTIME.priceSyncMs);
     
-    setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
+    setInterval(syncBinanceTokenList, RUNTIME.tokenListSyncMs); // master list changes slowly; default 6h
     setInterval(syncActiveConfig, RUNTIME.configSyncMs);
     setInterval(syncBaseData, 30 * 60 * 1000);   
     setInterval(checkStartOffsets, 15 * 60 * 1000); 
