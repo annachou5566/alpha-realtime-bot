@@ -168,6 +168,7 @@ app.use((req, res, next) => {
     
     // Mở cửa tự do cho Health Check của Render (Thường gọi vào đường dẫn gốc "/")
     if (req.path === '/' || req.path === '/health') {
+        res.setHeader('x-wave-release', 'competition-price-series-v1');
         return res.status(200).send('OK');
     }
     // [BW FIX] Đã xóa bypass API key cho /api/full-depth
@@ -1650,7 +1651,14 @@ server.listen(PORT, async () => {
         console.log('💤 [TICK-R2] Disabled. Set ENABLE_TICK_CACHE=true only when raw ticks are required.');
     }
 
-    syncTournamentPriceSeries({ maxFetches: 6 }).catch(error => console.warn('Price sync:', error.message));
+    (async () => {
+        const dryRun = await syncTournamentPriceSeries({ includeHistory: true, maxFetches: 100, dryRun: true });
+        console.log('[PRICE-BACKFILL] startup dry-run', dryRun);
+        if (Number(dryRun.missing || 0) > 0) {
+            const result = await syncTournamentPriceSeries({ includeHistory: true, maxFetches: 100 });
+            console.log('[PRICE-BACKFILL] startup result', result);
+        }
+    })().catch(error => console.warn('Price startup backfill:', error.message));
     setInterval(() => syncTournamentPriceSeries({ maxFetches: 6 }).catch(error => console.warn('Price sync:', error.message)), RUNTIME.priceSyncMs);
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
