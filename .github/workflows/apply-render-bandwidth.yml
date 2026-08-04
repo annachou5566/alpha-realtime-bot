@@ -20,15 +20,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PATCH_B64=.github/patches/render-bandwidth.patch.gz.b64
-          if [[ ! -f "$PATCH_B64" ]]; then
+          shopt -s nullglob
+          PARTS=(.github/patches/render-bandwidth.part*)
+          if [[ ${#PARTS[@]} -eq 0 ]]; then
             echo "Patch already applied"
             exit 0
           fi
-          base64 -d "$PATCH_B64" | gzip -d > /tmp/render-bandwidth.patch
+          cat "${PARTS[@]}" | base64 -d | gzip -d > /tmp/render-bandwidth.patch
           git apply --check /tmp/render-bandwidth.patch
           git apply /tmp/render-bandwidth.patch
-          rm -f "$PATCH_B64"
+          rm -f .github/patches/render-bandwidth.patch.gz.b64 "${PARTS[@]}" .github/patches/trigger.txt
           npm test
           git diff --check
           git config user.name "github-actions[bot]"
