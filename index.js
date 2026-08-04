@@ -168,7 +168,7 @@ app.use((req, res, next) => {
     
     // Mở cửa tự do cho Health Check của Render (Thường gọi vào đường dẫn gốc "/")
     if (req.path === '/' || req.path === '/health') {
-        res.setHeader('x-wave-release', 'competition-price-series-v1');
+        res.setHeader('x-wave-release', 'competition-price-series-v2');
         return res.status(200).send('OK');
     }
     // [BW FIX] Đã xóa bypass API key cho /api/full-depth
@@ -445,7 +445,9 @@ async function fetchBoundaryPrice(config, boundaryAt) {
         const url = `${base}?chainId=${encodeURIComponent(chainId)}` +
             `&interval=${attempt.interval}&limit=${attempt.limit}` +
             `&tokenAddress=${encodeURIComponent(contract)}&dataType=aggregate` +
-            `&startTime=${Math.max(0, boundaryAt - attempt.maxDriftMs)}` +
+            // Binance Alpha rejects startTime + endTime together with code -1130.
+            // endTime alone returns the bounded historical window ending after the
+            // requested UTC boundary, allowing chooseBoundaryPrice() to select it.
             `&endTime=${boundaryAt + attempt.maxDriftMs}`;
         try {
             const response = await axios.get(url, { headers: FAKE_HEADERS, timeout: 10_000 });
