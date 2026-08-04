@@ -9,6 +9,11 @@ const gzipAsync   = promisify(zlib.gzip);
 const gunzipAsync = promisify(zlib.gunzip);
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https'); 
+const {
+    buildTournamentBoundaries,
+    chooseBoundaryPrice,
+    stableJsonHash,
+} = require('./lib/competition-price-series');
 
 const http = require('http');
 const WebSocket = require('ws'); // dùng cho Spot Ticker stream từ Binance
@@ -22,11 +27,83 @@ const app = express();
 // 🛑 NÉN DỮ LIỆU HTTP
 const compression = require('compression');
 app.use(compression());
+app.use(express.json({ limit: '32kb' }));
+app.use((req, res, next) => {
+    const socket = res.socket;
+    const startedAt = socket ? socket.bytesWritten : 0;
+    res.once('finish', () => {
+        const bytes = socket ? Math.max(0, socket.bytesWritten - startedAt) : 0;
+        BANDWIDTH.httpOutBytes += bytes;
+        addCounter(BANDWIDTH.httpByRoute, `${req.method} ${req.route?.path || req.path}`, bytes);
+    });
+    next();
+});
 
 // ⚡ CHỈ DÙNG EXPRESS THUẦN TÚY, CẮT BỎ SOCKET.IO
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3000;
+
+function envInt(name, fallback, min, max) {
+    const parsed = Number.parseInt(process.env[name] || '', 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+}
+
+const RUNTIME = Object.freeze({
+    realtimePollMs: envInt('REALTIME_POLL_MS', 60_000, 30_000, 15 * 60_000),
+    limitRefreshMs: envInt('LIMIT_REFRESH_MS', 5 * 60_000, 60_000, 30 * 60_000),
+    configSyncMs: envInt('CONFIG_SYNC_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000),
+    competitionLiveWriteMs: envInt('COMPETITION_LIVE_WRITE_MS', 5 * 60_000, 60_000, 30 * 60_000),
+    priceSyncMs: envInt('PRICE_SYNC_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000),
+    tickCacheEnabled: String(process.env.ENABLE_TICK_CACHE || '').toLowerCase() === 'true',
+});
+
+const BANDWIDTH = {
+    startedAt: Date.now(),
+    httpOutBytes: 0,
+    httpByRoute: Object.create(null),
+    upstreamInBytes: 0,
+    upstreamByHost: Object.create(null),
+    wsInBytes: 0,
+    wsByStream: Object.create(null),
+    r2ReadBytes: 0,
+    r2WriteBytes: 0,
+    supabaseReadBytes: 0,
+};
+
+function addCounter(target, key, bytes) {
+    const amount = Number(bytes) || 0;
+    if (amount <= 0) return;
+    target[key] = (target[key] || 0) + amount;
+}
+
+function byteLength(value) {
+    if (value == null) return 0;
+    if (Buffer.isBuffer(value) || value instanceof Uint8Array) return value.byteLength;
+    if (typeof value === 'string') return Buffer.byteLength(value);
+    try { return Buffer.byteLength(JSON.stringify(value)); } catch (_) { return 0; }
+}
+
+function upstreamHost(urlValue) {
+    try { return new URL(urlValue).host || 'unknown'; } catch (_) { return 'unknown'; }
+}
+
+axios.interceptors.response.use(response => {
+    const headerBytes = Number(response.headers && response.headers['content-length']);
+    const bytes = Number.isFinite(headerBytes) && headerBytes > 0 ? headerBytes : byteLength(response.data);
+    BANDWIDTH.upstreamInBytes += bytes;
+    addCounter(BANDWIDTH.upstreamByHost, upstreamHost(response.config && response.config.url), bytes);
+    return response;
+}, error => {
+    const response = error && error.response;
+    if (response) {
+        const bytes = byteLength(response.data);
+        BANDWIDTH.upstreamInBytes += bytes;
+        addCounter(BANDWIDTH.upstreamByHost, upstreamHost(response.config && response.config.url), bytes);
+    }
+    return Promise.reject(error);
+});
 const FAKE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
     "client-type": "web"
@@ -47,6 +124,18 @@ const s3Client = new S3Client({
     }
 });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+const originalS3Send = s3Client.send.bind(s3Client);
+s3Client.send = async command => {
+    const commandName = command && command.constructor && command.constructor.name;
+    const body = command && command.input && command.input.Body;
+    if (commandName === 'PutObjectCommand') BANDWIDTH.r2WriteBytes += byteLength(body);
+    const response = await originalS3Send(command);
+    if (commandName === 'GetObjectCommand') {
+        BANDWIDTH.r2ReadBytes += Number(response && response.ContentLength) || 0;
+    }
+    return response;
+};
 
 // [BW FIX] Chỉ cho phép đúng domain production — chặn bot/site lạ nhúng API
 app.use(cors({
@@ -99,6 +188,24 @@ app.use((req, res, next) => {
 });
 // ----------------------------------------------
 
+app.get('/api/bandwidth-stats', (req, res) => {
+    const elapsedHours = Math.max((Date.now() - BANDWIDTH.startedAt) / 3_600_000, 1 / 60);
+    const project750h = bytes => Math.round((bytes / elapsedHours) * 750);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+        startedAt: new Date(BANDWIDTH.startedAt).toISOString(),
+        elapsedHours: Number(elapsedHours.toFixed(2)),
+        bytes: BANDWIDTH,
+        projected750h: {
+            httpOutBytes: project750h(BANDWIDTH.httpOutBytes),
+            serviceInitiatedBytes: project750h(
+                BANDWIDTH.upstreamInBytes + BANDWIDTH.wsInBytes + BANDWIDTH.r2ReadBytes + BANDWIDTH.r2WriteBytes + BANDWIDTH.supabaseReadBytes
+            ),
+        },
+        runtime: RUNTIME,
+    });
+});
+
 // --- RAM CACHE ---
 let GLOBAL_MARKET = {}; 
 let ACTIVE_CONFIG = {};      
@@ -113,6 +220,13 @@ let TOKEN_METRICS_HISTORY = {};
 let MARKET_VOL_HISTORY = [];
 let PREDICTION_SMOOTHING_CACHE = {};
 let BINANCE_TOKEN_LIST = []; // [THÔNG MINH]: Lưu trữ danh bạ gốc của Binance
+
+let PRICE_SERIES_CACHE = {};
+let PRICE_SERIES_LAST_HASH = '';
+let PRICE_SERIES_LAST_UPDATED_AT = 0;
+let PRICE_SERIES_SYNC_RUNNING = false;
+const PRICE_SERIES_KEY = 'competition-price-series.json';
+let LIMIT_MAP_CACHE = { ts: 0, volume: Object.create(null), tx: Object.create(null) };
 
 // ── ETF FLOWS — đọc R2, serve /api/etf-flows ──────────────────
 let ETF_CACHE = { data: null, ts: 0 };
@@ -278,6 +392,162 @@ async function syncHistoryFromR2() {
     } catch (e) { HISTORY_CACHE = {}; }
 }
 
+async function syncPriceSeriesFromR2() {
+    try {
+        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: PRICE_SERIES_KEY });
+        const resp = await s3Client.send(cmd);
+        const raw = await resp.Body.transformToString();
+        PRICE_SERIES_CACHE = JSON.parse(raw) || {};
+        PRICE_SERIES_LAST_HASH = stableJsonHash(PRICE_SERIES_CACHE);
+        PRICE_SERIES_LAST_UPDATED_AT = Number(resp.LastModified ? new Date(resp.LastModified).getTime() : Date.now());
+        console.log(`📈 Loaded ${Object.keys(PRICE_SERIES_CACHE).length} competition price series from R2.`);
+    } catch (_) {
+        PRICE_SERIES_CACHE = {};
+        PRICE_SERIES_LAST_HASH = stableJsonHash(PRICE_SERIES_CACHE);
+        PRICE_SERIES_LAST_UPDATED_AT = 0;
+    }
+}
+
+async function persistPriceSeriesToR2() {
+    const nextHash = stableJsonHash(PRICE_SERIES_CACHE);
+    if (nextHash === PRICE_SERIES_LAST_HASH) return false;
+    const body = JSON.stringify(PRICE_SERIES_CACHE);
+    await s3Client.send(new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: PRICE_SERIES_KEY,
+        Body: body,
+        ContentType: 'application/json',
+        CacheControl: 'public, max-age=300',
+    }));
+    PRICE_SERIES_LAST_HASH = nextHash;
+    PRICE_SERIES_LAST_UPDATED_AT = Date.now();
+    return true;
+}
+
+function normalizeContractForChain(contract, chainId) {
+    const cid = String(chainId || 56);
+    const caseSensitive = new Set(['501', 'CT_501', '784', 'CT_784', '195', 'CT_195']);
+    return caseSensitive.has(cid) ? String(contract || '') : String(contract || '').toLowerCase();
+}
+
+async function fetchBoundaryPrice(config, boundaryAt) {
+    if (!config || !config.contract || !Number.isFinite(boundaryAt)) return null;
+    const chainId = String(config.chainId || 56);
+    const contract = normalizeContractForChain(config.contract, chainId);
+    const base = 'https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines';
+
+    const attempts = [
+        { interval: '1m', limit: 5, maxDriftMs: 2 * 60_000 },
+        { interval: '1h', limit: 48, maxDriftMs: 2 * 3_600_000 },
+    ];
+    for (const attempt of attempts) {
+        const url = `${base}?chainId=${encodeURIComponent(chainId)}` +
+            `&interval=${attempt.interval}&limit=${attempt.limit}` +
+            `&tokenAddress=${encodeURIComponent(contract)}&dataType=aggregate` +
+            `&startTime=${Math.max(0, boundaryAt - attempt.maxDriftMs)}` +
+            `&endTime=${boundaryAt + attempt.maxDriftMs}`;
+        try {
+            const response = await axios.get(url, { headers: FAKE_HEADERS, timeout: 10_000 });
+            const selected = chooseBoundaryPrice(response.data, boundaryAt, attempt.maxDriftMs);
+            if (selected) {
+                return { ...selected, source: 'binance-alpha', resolution: attempt.interval };
+            }
+        } catch (_) { /* try lower-resolution fallback */ }
+    }
+    return null;
+}
+
+function tournamentSeriesId(config) {
+    return String(config && (config.db_id || config.id || config.alphaId || config.symbol) || '');
+}
+
+async function syncTournamentPriceSeries(options = {}) {
+    if (PRICE_SERIES_SYNC_RUNNING) return { skipped: true, reason: 'already-running' };
+    PRICE_SERIES_SYNC_RUNNING = true;
+    const includeHistory = options.includeHistory === true;
+    const maxFetches = Math.min(100, Math.max(1, Number(options.maxFetches) || 4));
+    const dryRun = options.dryRun === true;
+    const now = Date.now();
+    let fetched = 0;
+    let stored = 0;
+    let missing = 0;
+
+    try {
+        const configs = [
+            ...Object.values(ACTIVE_CONFIG),
+            ...(includeHistory ? Object.values(HISTORY_CACHE) : []),
+        ];
+        for (const config of configs) {
+            if (fetched >= maxFetches) break;
+            const id = tournamentSeriesId(config);
+            if (!id || !config.contract) continue;
+            const boundaries = buildTournamentBoundaries(config);
+            if (!boundaries.length) continue;
+
+            const existing = PRICE_SERIES_CACHE[id] || {
+                id,
+                alphaId: config.alphaId || null,
+                symbol: config.symbol || config.name || null,
+                startAt: boundaries[0].boundaryAt,
+                endAt: boundaries[boundaries.length - 1].boundaryAt,
+                points: [],
+            };
+            const knownSlots = new Set((existing.points || []).map(point => Number(point.slot)));
+
+            for (const boundary of boundaries) {
+                if (fetched >= maxFetches) break;
+                if (knownSlots.has(boundary.slot) || boundary.boundaryAt > now - 15_000) continue;
+                missing += 1;
+                if (dryRun) continue;
+                fetched += 1;
+                const pricePoint = await fetchBoundaryPrice(config, boundary.boundaryAt);
+                if (!pricePoint) continue;
+                existing.points.push({
+                    slot: boundary.slot,
+                    boundaryAt: boundary.boundaryAt,
+                    observedAt: pricePoint.observedAt,
+                    price: pricePoint.price,
+                    quality: pricePoint.quality,
+                    driftMs: pricePoint.driftMs,
+                    source: pricePoint.source,
+                    resolution: pricePoint.resolution,
+                });
+                existing.points.sort((a, b) => a.slot - b.slot);
+                knownSlots.add(boundary.slot);
+                PRICE_SERIES_CACHE[id] = existing;
+                stored += 1;
+            }
+        }
+        if (!dryRun && stored > 0) await persistPriceSeriesToR2();
+        return { skipped: false, fetched, stored, missing, series: Object.keys(PRICE_SERIES_CACHE).length };
+    } finally {
+        PRICE_SERIES_SYNC_RUNNING = false;
+    }
+}
+
+app.get('/api/competition-price-series', (req, res) => {
+    const requested = String(req.query.ids || '').split(',').map(value => value.trim()).filter(Boolean);
+    const data = requested.length
+        ? Object.fromEntries(requested.filter(id => PRICE_SERIES_CACHE[id]).map(id => [id, PRICE_SERIES_CACHE[id]]))
+        : PRICE_SERIES_CACHE;
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=300');
+    res.json({ version: 1, updatedAt: PRICE_SERIES_LAST_UPDATED_AT || null, data });
+});
+
+app.post('/api/admin/backfill-competition-prices', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const result = await syncTournamentPriceSeries({
+            includeHistory: req.body && req.body.includeHistory !== false,
+            maxFetches: req.body && req.body.maxFetches,
+            dryRun: req.body && req.body.dryRun === true,
+        });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message || 'price backfill failed' });
+    }
+});
+
 async function syncActiveConfig() {
     try {
         const todayStr = new Date().toISOString().split('T')[0];
@@ -285,6 +555,7 @@ async function syncActiveConfig() {
 
         if (error) throw error;
         if (data) {
+            BANDWIDTH.supabaseReadBytes += byteLength(data);
             const newActive = {};
             const newTokens = [];
             data.forEach(row => {
@@ -677,27 +948,35 @@ async function finalizeTournament(alphaId, finalData, predictionResult) {
 // ==========================================
 // 4. VÒNG LẶP REALTIME (FALLBACK API)
 // ==========================================
+let loopRealtimeRunning = false;
 async function loopRealtime() {
+    if (loopRealtimeRunning) return;
+    loopRealtimeRunning = true;
     try {
         const resTot = await axios.get(API_ENDPOINTS.BULK_TOTAL, { headers: FAKE_HEADERS, timeout: 15000 });
         
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        const resLim = await axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 15000 });
+        if (Date.now() - LIMIT_MAP_CACHE.ts >= RUNTIME.limitRefreshMs) {
+            try {
+                const resLim = await axios.get(API_ENDPOINTS.BULK_LIMIT, { headers: FAKE_HEADERS, timeout: 15000 });
+                if (resLim.data?.success && Array.isArray(resLim.data.data)) {
+                    const volume = Object.create(null);
+                    const tx = Object.create(null);
+                    resLim.data.data.forEach(item => {
+                        volume[item.alphaId] = parseFloat(item.volume24h || 0);
+                        tx[item.alphaId] = parseFloat(item.count24h || 0);
+                    });
+                    LIMIT_MAP_CACHE = { ts: Date.now(), volume, tx };
+                }
+            } catch (_) { /* retain last good limit snapshot */ }
+        }
 
         if (resTot.data?.success) {
             const now = new Date();
             const currentTs = now.getTime();
             const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
 
-            const limitMap = {};
-            const limitTxMap = {}; 
-            if (resLim.data?.success) {
-                resLim.data.data.forEach(t => {
-                    limitMap[t.alphaId] = parseFloat(t.volume24h || 0);
-                    limitTxMap[t.alphaId] = parseFloat(t.count24h || 0); 
-                });
-            }
+            const limitMap = LIMIT_MAP_CACHE.volume;
+            const limitTxMap = LIMIT_MAP_CACHE.tx;
 
             for (const t of resTot.data.data) {
                 const id = t.alphaId;
@@ -765,7 +1044,7 @@ async function loopRealtime() {
                         // Vol giảm (midnight UTC rollover hoặc token ít giao dịch)
                         // Bỏ qua tick này, KHÔNG reset history — giữ lại dữ liệu cũ
                         TOKEN_METRICS_HISTORY[id] = history.filter(h => currentTs - h.ts <= 60000);
-                        return; 
+                        continue;
                     }
                 }
                 history.push({ ts: currentTs, p: currentPrice, v: rollVolTot, tx: currentTx, buyV: buyVol3s, sellV: sellVol3s, tickTx: tickTx3s });
@@ -899,6 +1178,8 @@ async function loopRealtime() {
         } 
     } catch (e) { 
         console.error("⚠️ Lỗi quét API Binance Realtime:", e.message); 
+    } finally {
+        loopRealtimeRunning = false;
     }
 }
 
@@ -913,17 +1194,18 @@ app.get('/api/token-list', (req, res) => {
 });
 app.get('/api/market-data', (req, res) => {
     // [CẦM MÁU BĂNG THÔNG] Ép Cache 180 giây.
-    res.setHeader('Cache-Control', 'public, max-age=180');
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=300');
     res.json({ success: true, count: Object.keys(GLOBAL_MARKET).length, data: GLOBAL_MARKET });
 });
 
 app.get('/api/competition-data', (req, res) => {
-    // [CẦM MÁU BĂNG THÔNG] Ép Cache 180.
-    res.setHeader('Cache-Control', 'public, max-age=180');
+    const scope = ['running', 'history', 'all'].includes(req.query.scope) ? req.query.scope : 'all';
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=300');
     
     const responseData = {};
     const nowStr = new Date().toISOString().split('T')[0];
-    Object.assign(responseData, HISTORY_CACHE);
+    if (scope !== 'running') Object.assign(responseData, HISTORY_CACHE);
+    if (scope === 'history') return res.json(responseData);
 
     Object.keys(ACTIVE_CONFIG).forEach(alphaId => {
         const config = ACTIVE_CONFIG[alphaId];
@@ -1085,6 +1367,8 @@ app.get('/api/smart-money', async (req, res) => {
 // =====================================================================
 const _CL_SMOOTH = {}; // { alphaId: { speed, ticket, spread, trend, drop, netFlow, age } }
 const _CL_MAX_AGE = 5; // Giữ giá trị cũ tối đa 5 vòng (~5 phút) trước khi về 0
+let COMPETITION_LIVE_LAST_HASH = '';
+let COMPETITION_LIVE_LAST_WRITE_AT = 0;
 
 function _clSmooth(id, key, newVal) {
     if (!_CL_SMOOTH[id]) _CL_SMOOTH[id] = {};
@@ -1142,15 +1426,22 @@ async function writeCompetitionLive() {
     });
 
     if (!Object.keys(liveData).length) return;
+    if (Date.now() - COMPETITION_LIVE_LAST_WRITE_AT < RUNTIME.competitionLiveWriteMs) return;
+
+    const body = JSON.stringify({ ts: Date.now(), d: liveData });
+    const payloadHash = stableJsonHash(liveData);
+    if (payloadHash === COMPETITION_LIVE_LAST_HASH) return;
 
     try {
         await s3Client.send(new PutObjectCommand({
             Bucket: process.env.R2_BUCKET_NAME,
             Key: 'competition-live.json',
-            Body: JSON.stringify({ ts: Date.now(), d: liveData }),
+            Body: body,
             ContentType: 'application/json',
             CacheControl: 'no-cache, no-store, must-revalidate',
         }));
+        COMPETITION_LIVE_LAST_HASH = payloadHash;
+        COMPETITION_LIVE_LAST_WRITE_AT = Date.now();
     } catch (e) {
         console.warn('⚠️ competition-live R2:', e.message);
     }
@@ -1185,6 +1476,8 @@ function connectAggTradeWS() {
     });
 
     sock.on('message', raw => {
+        BANDWIDTH.wsInBytes += byteLength(raw);
+        addCounter(BANDWIDTH.wsByStream, 'aggTrade', byteLength(raw));
         try {
             // Combined stream: { stream: "btcusdt@aggTrade", data: {...} }
             const msg  = JSON.parse(raw);
@@ -1305,6 +1598,9 @@ async function flushTickToR2() {
 // ── /api/tick-live — trả ticks đang trong RAM buffer (chưa flush lên R2) ───────
 // Dùng khi frontend cần data của giờ hiện tại mà chưa có trong R2
 app.get('/api/tick-live', (req, res) => {
+    if (!RUNTIME.tickCacheEnabled) {
+        return res.status(503).json({ error: 'Tick cache is disabled by ENABLE_TICK_CACHE' });
+    }
     const symbol = (req.query.symbol || '').toUpperCase();
     if (!TICK_BUFFER[symbol]) {
         return res.status(404).json({ error: `${symbol} not in tick cache. Available: ${TICK_SYMBOLS.join(', ')}` });
@@ -1325,6 +1621,7 @@ server.listen(PORT, async () => {
     
     await syncBinanceTokenList(); // <--- Đưa Master List lên đầu tiên
     await syncHistoryFromR2();
+    await syncPriceSeriesFromR2();
     await syncActiveConfig();
     await syncBaseData();
     await checkStartOffsets();
@@ -1334,25 +1631,30 @@ server.listen(PORT, async () => {
     // [BW FIX] Tăng interval từ 20s lên 60s — giảm ~3x số lần gọi Binance bulk
     // Frontend dùng WebSocket Binance trực tiếp cho giá realtime nên 60s vẫn đủ
     loopRealtime(); 
-    setInterval(loopRealtime, 60000); 
+    setInterval(loopRealtime, RUNTIME.realtimePollMs);
 
     // Spot Ticker — WS stream thay REST, không bao giờ bị ban api.binance.com
     connectSpotTickerWS();
 
-    // AggTrade Tick Cache — 5 coin pilot, rolling 48h → R2
-    connectAggTradeWS();
-    // Flush mỗi 15 phút thay vì 1 giờ:
-    //   - Giảm data mất khi server crash (tối đa mất 15 phút thay vì 60 phút)
-    //   - Vẫn cần schedule ở :00/:15/:30/:45 để key file khớp tick-history.js
-    const msToNextQuarter = 15 * 60_000 - (Date.now() % (15 * 60_000));
-    setTimeout(() => {
-        flushTickToR2();
-        setInterval(flushTickToR2, 15 * 60 * 1000);
-    }, msToNextQuarter);
-    console.log(`⏱️ [TICK-R2] First flush in ${Math.round(msToNextQuarter/1000)}s (next :00/:15/:30/:45 UTC)`);
+    // Raw aggTrade cache is expensive and currently has no required frontend consumer.
+    // It is opt-in so the Render free-tier service does not continuously ingest five streams.
+    if (RUNTIME.tickCacheEnabled) {
+        connectAggTradeWS();
+        const msToNextQuarter = 15 * 60_000 - (Date.now() % (15 * 60_000));
+        setTimeout(() => {
+            flushTickToR2();
+            setInterval(flushTickToR2, 15 * 60 * 1000);
+        }, msToNextQuarter);
+        console.log(`⏱️ [TICK-R2] First flush in ${Math.round(msToNextQuarter/1000)}s`);
+    } else {
+        console.log('💤 [TICK-R2] Disabled. Set ENABLE_TICK_CACHE=true only when raw ticks are required.');
+    }
+
+    syncTournamentPriceSeries({ maxFetches: 6 }).catch(error => console.warn('Price sync:', error.message));
+    setInterval(() => syncTournamentPriceSeries({ maxFetches: 6 }).catch(error => console.warn('Price sync:', error.message)), RUNTIME.priceSyncMs);
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
-    setInterval(syncActiveConfig, 5 * 60 * 1000); 
+    setInterval(syncActiveConfig, RUNTIME.configSyncMs);
     setInterval(syncBaseData, 30 * 60 * 1000);   
     setInterval(checkStartOffsets, 15 * 60 * 1000); 
     setInterval(syncTailsFromR2, 10 * 60 * 1000); 
@@ -1437,14 +1739,23 @@ const SPOT_TICKER_CACHE = { data: null, ts: 0 };
 // vì chỉ còn đúng batch cuối cùng nhận được.
 const SPOT_TICKER_MAP = new Map(); // symbol -> { ...ticker, _seen }
 
+let SPOT_TICKER_SOCKET = null;
+let SPOT_TICKER_SHOULD_RUN = true;
+let SPOT_TICKER_LAST_REQUEST_AT = Date.now();
+const SPOT_TICKER_IDLE_MS = envInt('SPOT_TICKER_IDLE_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000);
+
 function connectSpotTickerWS() {
+    if (SPOT_TICKER_SOCKET && (SPOT_TICKER_SOCKET.readyState === WebSocket.OPEN || SPOT_TICKER_SOCKET.readyState === WebSocket.CONNECTING)) return;
     const sock = new WebSocket('wss://stream.binance.com:9443/ws/!miniTicker@arr');
+    SPOT_TICKER_SOCKET = sock;
 
     sock.on('open', () => {
         console.log('🟢 [SPOT-WS] Connected — nhận live mini-ticker từ Binance');
     });
 
     sock.on('message', raw => {
+        BANDWIDTH.wsInBytes += byteLength(raw);
+        addCounter(BANDWIDTH.wsByStream, 'spot-miniTicker', byteLength(raw));
         try {
             const tickers = JSON.parse(raw);
             if (!Array.isArray(tickers) || tickers.length === 0) return;
@@ -1469,8 +1780,11 @@ function connectSpotTickerWS() {
     });
 
     sock.on('close', (code, reason) => {
-        console.warn(`🔴 [SPOT-WS] Disconnected (${code}), reconnect in 5s...`);
-        setTimeout(connectSpotTickerWS, 5000);
+        SPOT_TICKER_SOCKET = null;
+        if (SPOT_TICKER_SHOULD_RUN) {
+            console.warn(`🔴 [SPOT-WS] Disconnected (${code}), reconnect in 5s...`);
+            setTimeout(connectSpotTickerWS, 5000);
+        }
     });
 
     sock.on('error', err => {
@@ -1488,10 +1802,23 @@ function connectSpotTickerWS() {
     }, 3 * 60 * 1000);
 }
 
+setInterval(() => {
+    if (!SPOT_TICKER_SHOULD_RUN) return;
+    if (Date.now() - SPOT_TICKER_LAST_REQUEST_AT <= SPOT_TICKER_IDLE_MS) return;
+    SPOT_TICKER_SHOULD_RUN = false;
+    if (SPOT_TICKER_SOCKET) {
+        try { SPOT_TICKER_SOCKET.terminate(); } catch (_) {}
+    }
+    console.log('💤 [SPOT-WS] Paused after idle period; cached snapshot remains available.');
+}, 60_000);
+
 // 🆕 Dọn định kỳ các symbol không xuất hiện trong batch nào suốt >5 phút
 // (delist khỏi Binance, hoặc đổi tên cặp) — tránh cache phình to vô hạn
 // và tránh trả về giá cũ mãi mãi cho 1 symbol đã ngừng giao dịch.
 setInterval(() => {
+    // Preserve the last complete snapshot while the collector is paused.
+    // Removing every symbol during idle would make the first returning user see an empty table.
+    if (!SPOT_TICKER_SHOULD_RUN) return;
     const cutoff = Date.now() - 5 * 60 * 1000;
     let removed = 0;
     for (const [sym, t] of SPOT_TICKER_MAP) {
@@ -1505,11 +1832,16 @@ setInterval(() => {
 
 // Route giữ nguyên interface — chỉ serve RAM cache thay vì gọi REST
 app.get('/api/spot-tickers', (req, res) => {
-    if (!SPOT_TICKER_CACHE.data) {
+    SPOT_TICKER_LAST_REQUEST_AT = Date.now();
+    if (!SPOT_TICKER_SHOULD_RUN) {
+        SPOT_TICKER_SHOULD_RUN = true;
+        connectSpotTickerWS();
+    }
+    if (!Array.isArray(SPOT_TICKER_CACHE.data) || SPOT_TICKER_CACHE.data.length === 0) {
         // WS chưa nhận được data lần đầu (mới khởi động < vài giây)
         return res.status(503).json({ error: 'Spot ticker stream warming up, retry in 3s' });
     }
-    res.setHeader('Cache-Control', 'public, max-age=5');
+    res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=15');
     // Bỏ field _seen (chỉ dùng nội bộ để dọn cache) trước khi trả về client
     res.json(SPOT_TICKER_CACHE.data.map(({ _seen, ...rest }) => rest));
 });
@@ -1562,7 +1894,7 @@ const FUTURES_TICKER_CACHE = { data: null, ts: 0 };
 app.get('/api/futures-tickers', async (req, res) => {
     const now = Date.now();
     if (FUTURES_TICKER_CACHE.data && now - FUTURES_TICKER_CACHE.ts < 30000) {
-        res.setHeader('Cache-Control', 'public, max-age=30');
+        res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=60, stale-while-revalidate=30');
         return res.json(FUTURES_TICKER_CACHE.data);
     }
     try {
@@ -1595,7 +1927,7 @@ app.get('/api/futures-tickers', async (req, res) => {
         FUTURES_TICKER_CACHE.data = merged;
         FUTURES_TICKER_CACHE.ts   = now;
 
-        res.setHeader('Cache-Control', 'public, max-age=30');
+        res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=60, stale-while-revalidate=30');
         res.json(merged);
 
     } catch (error) {
