@@ -1,0 +1,141 @@
+name: One-time production backfill
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    if: github.event.pull_request.head.ref == 'chatgpt/production-backfill-trigger'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BASE_URL: https://alpha-realtime.onrender.com
+      API_KEY: ${{ secrets.RENDER_API_SECRET_KEY || secrets.API_SECRET_KEY || secrets.RENDER_SECRET_KEY }}
+    steps:
+      - name: Verify secret configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "${API_KEY:-}" ]]; then
+            echo "::error::Missing one of RENDER_API_SECRET_KEY, API_SECRET_KEY, or RENDER_SECRET_KEY in GitHub Actions secrets"
+            exit 2
+          fi
+
+      - name: Wait for deployed backend
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 60); do
+            health=$(curl -sS --max-time 20 -o /tmp/health.txt -w '%{http_code}' "$BASE_URL/health" || true)
+            protected=$(curl -sS --max-time 30 -o /tmp/bandwidth.json -w '%{http_code}' \
+              -H "x-api-key: $API_KEY" "$BASE_URL/api/bandwidth-stats" || true)
+            if [[ "$health" == "200" && "$protected" == "200" ]] \
+              && node -e "const j=require('/tmp/bandwidth.json'); if(!j.projected750h||!j.runtime) process.exit(1)"; then
+              echo "Render deployment verified on attempt $attempt"
+              cat /tmp/bandwidth.json
+              exit 0
+            fi
+            echo "Waiting for Render: health=$health protected=$protected attempt=$attempt/60"
+            sleep 10
+          done
+          echo "::error::New Render deployment was not verified"
+          exit 1
+
+      - name: Dry-run and bounded idempotent backfill
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          call_backfill() {
+            local dry="$1"
+            local output="$2"
+            local code
+            code=$(curl -sS --max-time 240 -o "$output" -w '%{http_code}' \
+              -X POST \
+              -H "x-api-key: $API_KEY" \
+              -H 'content-type: application/json' \
+              --data "{\"includeHistory\":true,\"maxFetches\":100,\"dryRun\":$dry}" \
+              "$BASE_URL/api/admin/backfill-competition-prices" || true)
+            if [[ "$code" != "200" ]]; then
+              echo "::error::Backfill endpoint returned HTTP ${code:-000}"
+              cat "$output" || true
+              exit 1
+            fi
+            node -e "const fs=require('fs'); const j=JSON.parse(fs.readFileSync('$output','utf8')); if(j.error) throw new Error(j.error)"
+          }
+
+          call_backfill true /tmp/dry.json
+          missing=$(node -e "const j=require('/tmp/dry.json'); process.stdout.write(String(Number(j.missing||0)))")
+          echo "Initial dry-run:"
+          cat /tmp/dry.json
+
+          rounds=0
+          total_stored=0
+          while [[ "$missing" -gt 0 && "$rounds" -lt 8 ]]; do
+            rounds=$((rounds + 1))
+            call_backfill false /tmp/actual.json
+            stored=$(node -e "const j=require('/tmp/actual.json'); process.stdout.write(String(Number(j.stored||0)))")
+            fetched=$(node -e "const j=require('/tmp/actual.json'); process.stdout.write(String(Number(j.fetched||0)))")
+            total_stored=$((total_stored + stored))
+            echo "Backfill round $rounds: fetched=$fetched stored=$stored"
+            cat /tmp/actual.json
+
+            call_backfill true /tmp/dry.json
+            missing=$(node -e "const j=require('/tmp/dry.json'); process.stdout.write(String(Number(j.missing||0)))")
+            echo "Remaining missing=$missing"
+            if [[ "$stored" -eq 0 ]]; then
+              echo "No further progress; leaving unavailable boundaries missing"
+              break
+            fi
+            sleep 5
+          done
+
+          code=$(curl -sS --max-time 60 -o /tmp/series.json -w '%{http_code}' \
+            -H "x-api-key: $API_KEY" "$BASE_URL/api/competition-price-series" || true)
+          if [[ "$code" != "200" ]]; then
+            echo "::error::Price series verification returned HTTP ${code:-000}"
+            exit 1
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const dry = JSON.parse(fs.readFileSync('/tmp/dry.json','utf8'));
+          const response = JSON.parse(fs.readFileSync('/tmp/series.json','utf8'));
+          const map = response.data || response;
+          const entries = Object.values(map || {});
+          const pointCount = entries.reduce((sum, item) => sum + (Array.isArray(item.points) ? item.points.length : 0), 0);
+          const invalid = entries.filter(item => !Array.isArray(item.points) || item.points.some(point => !(Number(point.price) > 0) || !Number.isFinite(Date.parse(point.boundaryAt || point.observedAt || ''))));
+          console.log(JSON.stringify({
+            series: entries.length,
+            points: pointCount,
+            remainingMissing: Number(dry.missing || 0),
+            invalidSeries: invalid.length,
+          }, null, 2));
+          if (invalid.length) process.exit(1);
+          NODE
+
+      - name: Final bandwidth projection
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "${API_KEY:-}" ]]; then exit 0; fi
+          code=$(curl -sS --max-time 30 -o /tmp/final-bandwidth.json -w '%{http_code}' \
+            -H "x-api-key: $API_KEY" "$BASE_URL/api/bandwidth-stats" || true)
+          if [[ "$code" == "200" ]]; then
+            node - <<'NODE'
+            const j = require('/tmp/final-bandwidth.json');
+            const mb = value => (Number(value || 0) / 1024 / 1024).toFixed(2);
+            console.log(JSON.stringify({
+              elapsedHours: j.elapsedHours,
+              projected750hMB: {
+                httpResponses: mb(j.projected750h && j.projected750h.httpOutBytes),
+                serviceInitiated: mb(j.projected750h && j.projected750h.serviceInitiatedBytes),
+              },
+              runtime: j.runtime,
+            }, null, 2));
+            NODE
+          fi
