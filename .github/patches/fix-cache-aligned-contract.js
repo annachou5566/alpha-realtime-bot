@@ -17,6 +17,10 @@ const replacements = [
     `    assert.match(source, /TOKEN_LIST_SYNC_MS', 6 * 60 * 60_000/);`,
     `    assert.ok(source.includes("TOKEN_LIST_SYNC_MS', 6 * 60 * 60_000"));`,
   ],
+  [
+    `    assert.match(source, /syncBaseData({ force: true })/);`,
+    `    assert.ok(source.includes('syncBaseData({ force: true })'));`,
+  ],
 ];
 
 for (const [before, after] of replacements) {
