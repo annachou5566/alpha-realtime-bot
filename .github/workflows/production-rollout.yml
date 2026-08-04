@@ -1,0 +1,178 @@
+name: Production rollout checks
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: Run bounded competition price backfill
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha-realtime-production-rollout
+  cancel-in-progress: false
+
+jobs:
+  verify-and-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BASE_URL: https://alpha-realtime.onrender.com
+      API_KEY: ${{ secrets.RENDER_API_SECRET_KEY || secrets.API_SECRET_KEY || secrets.RENDER_SECRET_KEY }}
+      RUN_BACKFILL: ${{ contains(github.event.head_commit.message, '[run-price-backfill]') || inputs.backfill }}
+    steps:
+      - name: Wait for Render health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 60); do
+            code=$(curl -sS --max-time 20 -o /tmp/health.txt -w '%{http_code}' "$BASE_URL/health" || true)
+            if [[ "$code" == "200" ]]; then
+              echo "Render health is ready on attempt $attempt"
+              exit 0
+            fi
+            echo "Render health not ready yet: HTTP ${code:-000} (attempt $attempt/60)"
+            sleep 10
+          done
+          echo "::error::Render health did not become ready"
+          exit 1
+
+      - name: Verify deployed bandwidth endpoint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "${API_KEY:-}" ]]; then
+            echo "::error::Missing GitHub Actions secret. Configure one of RENDER_API_SECRET_KEY, API_SECRET_KEY, or RENDER_SECRET_KEY."
+            exit 2
+          fi
+          ready=0
+          for attempt in $(seq 1 60); do
+            code=$(curl -sS --max-time 30 -o /tmp/bandwidth.json -w '%{http_code}' \
+              -H "x-api-key: $API_KEY" \
+              "$BASE_URL/api/bandwidth-stats" || true)
+            if [[ "$code" == "200" ]] && node -e "const j=require('/tmp/bandwidth.json'); if(!j.projected750h||!j.runtime) process.exit(1)"; then
+              ready=1
+              echo "New backend deployment verified on attempt $attempt"
+              break
+            fi
+            echo "Waiting for new Render deployment: HTTP ${code:-000} (attempt $attempt/60)"
+            sleep 10
+          done
+          if [[ "$ready" != "1" ]]; then
+            echo "::error::The new bandwidth endpoint was not available"
+            exit 1
+          fi
+          node - <<'NODE'
+          const j = require('/tmp/bandwidth.json');
+          const mb = n => (Number(n || 0) / 1024 / 1024).toFixed(2);
+          console.log(JSON.stringify({
+            startedAt: j.startedAt,
+            elapsedHours: j.elapsedHours,
+            projected750hMB: {
+              http: mb(j.projected750h.httpOutBytes),
+              serviceInitiated: mb(j.projected750h.serviceInitiatedBytes),
+            },
+            runtime: j.runtime,
+          }, null, 2));
+          NODE
+
+      - name: Dry-run and bounded price backfill
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          call_backfill() {
+            local dry="$1"
+            local output="$2"
+            local code
+            code=$(curl -sS --max-time 180 -o "$output" -w '%{http_code}' \
+              -X POST \
+              -H "x-api-key: $API_KEY" \
+              -H 'content-type: application/json' \
+              --data "{\"includeHistory\":true,\"maxFetches\":100,\"dryRun\":$dry}" \
+              "$BASE_URL/api/admin/backfill-competition-prices" || true)
+            if [[ "$code" != "200" ]]; then
+              echo "::error::Backfill endpoint returned HTTP ${code:-000}"
+              cat "$output" || true
+              exit 1
+            fi
+            node -e "const j=require('./$output'); if(j.error) process.exit(1)" 2>/dev/null || node -e "const fs=require('fs'); const j=JSON.parse(fs.readFileSync('$output','utf8')); if(j.error) process.exit(1)"
+          }
+
+          call_backfill true /tmp/dry.json
+          missing=$(node -e "const j=require('/tmp/dry.json'); process.stdout.write(String(Number(j.missing||0)))")
+          echo "Dry-run missing points: $missing"
+          cat /tmp/dry.json
+
+          if [[ "$RUN_BACKFILL" != "true" ]]; then
+            echo "Backfill not requested for this run"
+            exit 0
+          fi
+
+          rounds=0
+          total_stored=0
+          while [[ "$missing" -gt 0 && "$rounds" -lt 8 ]]; do
+            rounds=$((rounds + 1))
+            call_backfill false /tmp/actual.json
+            stored=$(node -e "const j=require('/tmp/actual.json'); process.stdout.write(String(Number(j.stored||0)))")
+            fetched=$(node -e "const j=require('/tmp/actual.json'); process.stdout.write(String(Number(j.fetched||0)))")
+            total_stored=$((total_stored + stored))
+            echo "Round $rounds: fetched=$fetched stored=$stored"
+            cat /tmp/actual.json
+
+            call_backfill true /tmp/dry.json
+            missing=$(node -e "const j=require('/tmp/dry.json'); process.stdout.write(String(Number(j.missing||0)))")
+            echo "Remaining missing points: $missing"
+            if [[ "$stored" -eq 0 ]]; then
+              echo "No further progress; stopping safely with missing points unfilled"
+              break
+            fi
+            sleep 5
+          done
+
+          code=$(curl -sS --max-time 60 -o /tmp/series.json -w '%{http_code}' \
+            -H "x-api-key: $API_KEY" \
+            "$BASE_URL/api/competition-price-series" || true)
+          if [[ "$code" != "200" ]]; then
+            echo "::error::Price-series verification returned HTTP ${code:-000}"
+            exit 1
+          fi
+
+          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('fs');
+          const dry = JSON.parse(fs.readFileSync('/tmp/dry.json', 'utf8'));
+          const series = JSON.parse(fs.readFileSync('/tmp/series.json', 'utf8'));
+          const entries = Object.values(series.data || series || {});
+          const points = entries.reduce((sum, item) => sum + (Array.isArray(item.points) ? item.points.length : 0), 0);
+          console.log('## Competition price backfill');
+          console.log(`- Series: ${entries.length}`);
+          console.log(`- Stored points: ${points}`);
+          console.log(`- Remaining missing: ${Number(dry.missing || 0)}`);
+          console.log(`- Generated at: ${new Date().toISOString()}`);
+          NODE
+
+      - name: Final bandwidth snapshot
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "${API_KEY:-}" ]]; then exit 0; fi
+          code=$(curl -sS --max-time 30 -o /tmp/bandwidth-final.json -w '%{http_code}' \
+            -H "x-api-key: $API_KEY" \
+            "$BASE_URL/api/bandwidth-stats" || true)
+          if [[ "$code" == "200" ]]; then
+            node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+            const j = require('/tmp/bandwidth-final.json');
+            const mb = n => (Number(n || 0) / 1024 / 1024).toFixed(2);
+            console.log('## Render bandwidth snapshot');
+            console.log(`- Runtime hours: ${j.elapsedHours}`);
+            console.log(`- Projected HTTP responses: ${mb(j.projected750h && j.projected750h.httpOutBytes)} MB / 750h`);
+            console.log(`- Projected service-initiated: ${mb(j.projected750h && j.projected750h.serviceInitiatedBytes)} MB / 750h`);
+            NODE
+          fi
