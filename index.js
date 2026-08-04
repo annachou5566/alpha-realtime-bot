@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, GetObjectCommand, HeadObjectCommand, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const zlib = require('zlib');
 const { promisify } = require('util');
 const gzipAsync   = promisify(zlib.gzip);
@@ -56,6 +56,7 @@ const RUNTIME = Object.freeze({
     configSyncMs: envInt('CONFIG_SYNC_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000),
     competitionLiveWriteMs: envInt('COMPETITION_LIVE_WRITE_MS', 5 * 60_000, 60_000, 30 * 60_000),
     priceSyncMs: envInt('PRICE_SYNC_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000),
+    spotTickerIdleMs: envInt('SPOT_TICKER_IDLE_MS', 2 * 60_000, 30_000, 30 * 60_000),
     tickCacheEnabled: String(process.env.ENABLE_TICK_CACHE || '').toLowerCase() === 'true',
 });
 
@@ -71,6 +72,34 @@ const BANDWIDTH = {
     r2WriteBytes: 0,
     supabaseReadBytes: 0,
 };
+
+let BANDWIDTH_STEADY_BASELINE = null;
+
+function captureBandwidthBaseline() {
+    return {
+        startedAt: Date.now(),
+        httpOutBytes: BANDWIDTH.httpOutBytes,
+        upstreamInBytes: BANDWIDTH.upstreamInBytes,
+        wsInBytes: BANDWIDTH.wsInBytes,
+        r2ReadBytes: BANDWIDTH.r2ReadBytes,
+        r2WriteBytes: BANDWIDTH.r2WriteBytes,
+        supabaseReadBytes: BANDWIDTH.supabaseReadBytes,
+    };
+}
+
+function bandwidthDeltaSince(baseline) {
+    if (!baseline) return null;
+    const delta = key => Math.max(0, Number(BANDWIDTH[key] || 0) - Number(baseline[key] || 0));
+    return {
+        startedAt: baseline.startedAt,
+        httpOutBytes: delta('httpOutBytes'),
+        upstreamInBytes: delta('upstreamInBytes'),
+        wsInBytes: delta('wsInBytes'),
+        r2ReadBytes: delta('r2ReadBytes'),
+        r2WriteBytes: delta('r2WriteBytes'),
+        supabaseReadBytes: delta('supabaseReadBytes'),
+    };
+}
 
 function addCounter(target, key, bytes) {
     const amount = Number(bytes) || 0;
@@ -168,7 +197,7 @@ app.use((req, res, next) => {
     
     // Mở cửa tự do cho Health Check của Render (Thường gọi vào đường dẫn gốc "/")
     if (req.path === '/' || req.path === '/health') {
-        res.setHeader('x-wave-release', 'competition-price-series-v2');
+        res.setHeader('x-wave-release', 'competition-price-series-v3');
         return res.status(200).send('OK');
     }
     // [BW FIX] Đã xóa bypass API key cho /api/full-depth
@@ -191,7 +220,23 @@ app.use((req, res, next) => {
 
 app.get('/api/bandwidth-stats', (req, res) => {
     const elapsedHours = Math.max((Date.now() - BANDWIDTH.startedAt) / 3_600_000, 1 / 60);
-    const project750h = bytes => Math.round((bytes / elapsedHours) * 750);
+    const project750h = (bytes, hours = elapsedHours) => Math.round((bytes / Math.max(hours, 1 / 60)) * 750);
+    const steadyBytes = bandwidthDeltaSince(BANDWIDTH_STEADY_BASELINE);
+    const steadyElapsedHours = steadyBytes
+        ? Math.max((Date.now() - steadyBytes.startedAt) / 3_600_000, 1 / 60)
+        : null;
+    const steadyState = steadyBytes ? {
+        startedAt: new Date(steadyBytes.startedAt).toISOString(),
+        elapsedHours: Number(steadyElapsedHours.toFixed(2)),
+        bytes: steadyBytes,
+        projected750h: {
+            httpOutBytes: project750h(steadyBytes.httpOutBytes, steadyElapsedHours),
+            serviceInitiatedBytes: project750h(
+                steadyBytes.upstreamInBytes + steadyBytes.wsInBytes + steadyBytes.r2ReadBytes + steadyBytes.r2WriteBytes + steadyBytes.supabaseReadBytes,
+                steadyElapsedHours
+            ),
+        },
+    } : null;
     res.setHeader('Cache-Control', 'no-store');
     res.json({
         startedAt: new Date(BANDWIDTH.startedAt).toISOString(),
@@ -203,6 +248,7 @@ app.get('/api/bandwidth-stats', (req, res) => {
                 BANDWIDTH.upstreamInBytes + BANDWIDTH.wsInBytes + BANDWIDTH.r2ReadBytes + BANDWIDTH.r2WriteBytes + BANDWIDTH.supabaseReadBytes
             ),
         },
+        steadyState,
         runtime: RUNTIME,
     });
 });
@@ -215,6 +261,7 @@ let BASE_HISTORY_DATA = {};
 let START_OFFSET_CACHE = {}; 
 let SNAPSHOT_TAIL_TOTAL = {}; 
 let SNAPSHOT_TAIL_LIMIT = {}; 
+let TAILS_CACHE_ETAG = '';
 let ACTIVE_TOKEN_LIST = [];  
 
 let TOKEN_METRICS_HISTORY = {}; 
@@ -645,12 +692,27 @@ async function checkStartOffsets() {
 // ==========================================
 // 1.5. ĐỒNG BỘ "CÁI ĐUÔI" TỪ PYTHON BOT
 // ==========================================
-async function syncTailsFromR2() {
+async function syncTailsFromR2(options = {}) {
+    const force = options.force === true;
+    const key = 'tails_cache.json';
     try {
-        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: "tails_cache.json" });
+        if (!force && TAILS_CACHE_ETAG) {
+            const head = await s3Client.send(new HeadObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: key,
+            }));
+            const nextEtag = String(head && head.ETag || '');
+            if (nextEtag && nextEtag === TAILS_CACHE_ETAG) {
+                console.log('🦊 Tails Cache unchanged; skipped 24 MB body download.');
+                return { changed: false, etag: nextEtag };
+            }
+        }
+
+        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key });
         const resp = await s3Client.send(cmd);
         const str = await resp.Body.transformToString();
         const data = JSON.parse(str);
+        TAILS_CACHE_ETAG = String(resp && resp.ETag || TAILS_CACHE_ETAG || '');
         
         if (data.total) SNAPSHOT_TAIL_TOTAL = data.total;
         if (data.limit) SNAPSHOT_TAIL_LIMIT = data.limit;
@@ -666,8 +728,10 @@ async function syncTailsFromR2() {
             }
         }
         console.log(`🦊 Đã tải Tails Cache từ R2.`);
+        return { changed: true, etag: TAILS_CACHE_ETAG };
     } catch (e) {
-        console.error("⚠️ Chưa tải được Tails Cache.");
+        console.error("⚠️ Chưa tải được Tails Cache.", e.message);
+        return { changed: false, error: e.message };
     }
 }
 
@@ -1629,15 +1693,16 @@ server.listen(PORT, async () => {
     await syncBaseData();
     await checkStartOffsets();
     await fetch14DaysHistoryBapi(); 
-    await syncTailsFromR2();
+    await syncTailsFromR2({ force: true });
     
     // [BW FIX] Tăng interval từ 20s lên 60s — giảm ~3x số lần gọi Binance bulk
     // Frontend dùng WebSocket Binance trực tiếp cho giá realtime nên 60s vẫn đủ
     loopRealtime(); 
     setInterval(loopRealtime, RUNTIME.realtimePollMs);
 
-    // Spot Ticker — WS stream thay REST, không bao giờ bị ban api.binance.com
-    connectSpotTickerWS();
+    // Spot Ticker is demand-driven. Do not ingest the all-market stream until
+    // /api/spot-tickers is requested; the last complete snapshot remains cached.
+    console.log('💤 [SPOT-WS] Demand-driven; waiting for /api/spot-tickers.');
 
     // Raw aggTrade cache is expensive and currently has no required frontend consumer.
     // It is opt-in so the Render free-tier service does not continuously ingest five streams.
@@ -1660,7 +1725,12 @@ server.listen(PORT, async () => {
             const result = await syncTournamentPriceSeries({ includeHistory: true, maxFetches: 100 });
             console.log('[PRICE-BACKFILL] startup result', result);
         }
-    })().catch(error => console.warn('Price startup backfill:', error.message));
+    })()
+        .catch(error => console.warn('Price startup backfill:', error.message))
+        .finally(() => {
+            BANDWIDTH_STEADY_BASELINE = captureBandwidthBaseline();
+            console.log('[BW] Steady-state bandwidth window started after startup/backfill.');
+        });
     setInterval(() => syncTournamentPriceSeries({ maxFetches: 6 }).catch(error => console.warn('Price sync:', error.message)), RUNTIME.priceSyncMs);
     
     setInterval(syncBinanceTokenList, 60 * 60 * 1000); // 1 tiếng cập nhật danh bạ gốc 1 lần
@@ -1750,9 +1820,9 @@ const SPOT_TICKER_CACHE = { data: null, ts: 0 };
 const SPOT_TICKER_MAP = new Map(); // symbol -> { ...ticker, _seen }
 
 let SPOT_TICKER_SOCKET = null;
-let SPOT_TICKER_SHOULD_RUN = true;
-let SPOT_TICKER_LAST_REQUEST_AT = Date.now();
-const SPOT_TICKER_IDLE_MS = envInt('SPOT_TICKER_IDLE_MS', 15 * 60_000, 5 * 60_000, 60 * 60_000);
+let SPOT_TICKER_SHOULD_RUN = false;
+let SPOT_TICKER_LAST_REQUEST_AT = 0;
+const SPOT_TICKER_IDLE_MS = RUNTIME.spotTickerIdleMs;
 
 function connectSpotTickerWS() {
     if (SPOT_TICKER_SOCKET && (SPOT_TICKER_SOCKET.readyState === WebSocket.OPEN || SPOT_TICKER_SOCKET.readyState === WebSocket.CONNECTING)) return;

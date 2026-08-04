@@ -11,7 +11,14 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /competition-price-series\.json/);
     assert.match(source, /\/api\/bandwidth-stats/);
     assert.match(source, /\/api\/competition-price-series/);
-    assert.match(source, /x-wave-release', 'competition-price-series-v2/);
+    assert.match(source, /x-wave-release', 'competition-price-series-v3/);
+    assert.match(source, /HeadObjectCommand/);
+    assert.match(source, /Tails Cache unchanged; skipped 24 MB body download/);
+    assert.match(source, /let SPOT_TICKER_SHOULD_RUN = false/);
+    assert.match(source, /let SPOT_TICKER_LAST_REQUEST_AT = 0/);
+    assert.match(source, /Demand-driven; waiting for \/api\/spot-tickers/);
+    assert.match(source, /steadyState/);
+    assert.match(source, /BANDWIDTH_STEADY_BASELINE = captureBandwidthBaseline/);
     assert.match(source, /`&endTime=\$\{boundaryAt \+ attempt\.maxDriftMs\}`/);
     assert.doesNotMatch(source, /`&startTime=\$\{Math\.max\(0, boundaryAt - attempt\.maxDriftMs\)\}`/);
     assert.match(source, /includeHistory: true, maxFetches: 100, dryRun: true/);
