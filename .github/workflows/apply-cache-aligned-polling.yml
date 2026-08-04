@@ -24,15 +24,17 @@ jobs:
         run: |
           set -Eeuo pipefail
           PATCHER=.github/patches/apply-cache-aligned-polling.js
+          CONTRACT_FIX=.github/patches/fix-cache-aligned-contract.js
           if [[ ! -f "$PATCHER" ]]; then
             echo "Cache-aligned polling already applied"
             exit 0
           fi
           node "$PATCHER"
+          node "$CONTRACT_FIX"
           node --check index.js
           node --test
           git diff --check
-          rm -f "$PATCHER"
+          rm -f "$PATCHER" "$CONTRACT_FIX"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
