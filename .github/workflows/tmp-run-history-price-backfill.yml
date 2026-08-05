@@ -1,0 +1,88 @@
+name: Temporary bounded History price backfill
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/tmp-run-history-price-backfill.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-history-price-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    if: github.event.pull_request.head.ref == 'chatgpt/run-history-price-backfill-2026-08-05'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BASE_URL: https://alpha-realtime.onrender.com
+      API_KEY: ${{ secrets.RENDER_API_SECRET_KEY || secrets.API_SECRET_KEY || secrets.RENDER_SECRET_KEY }}
+    steps:
+      - name: Verify protected backend
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ -n "${API_KEY:-}" ]] || { echo '::error::Missing Render API secret'; exit 2; }
+          code=$(curl -sS --max-time 30 -D /tmp/health-headers.txt -o /tmp/health.txt -w '%{http_code}' "$BASE_URL/health" || true)
+          release=$(awk 'BEGIN{IGNORECASE=1} /^x-wave-release:/ {gsub("\r", "", $2); print $2}' /tmp/health-headers.txt | tail -n1)
+          echo "health=$code release=${release:-missing}"
+          [[ "$code" == "200" && "$release" == "competition-price-series-v4" ]]
+
+      - name: Run bounded idempotent backfill
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          call_backfill() {
+            local dry="$1" output="$2"
+            local code
+            code=$(curl -sS --max-time 200 -o "$output" -w '%{http_code}' \
+              -X POST \
+              -H "x-api-key: $API_KEY" \
+              -H 'content-type: application/json' \
+              --data "{\"includeHistory\":true,\"maxFetches\":100,\"dryRun\":$dry}" \
+              "$BASE_URL/api/admin/backfill-competition-prices" || true)
+            echo "http=$code body=$(cat "$output" 2>/dev/null || true)"
+            [[ "$code" == "200" ]]
+            node -e "const j=require('$output'); if(j.error||j.skipped) process.exit(1)"
+          }
+
+          call_backfill true /tmp/dry.json
+          missing=$(node -e "const j=require('/tmp/dry.json'); process.stdout.write(String(Number(j.missing||0)))")
+          echo "initial_missing=$missing"
+
+          rounds=0
+          total_stored=0
+          while [[ "$missing" -gt 0 && "$rounds" -lt 8 ]]; do
+            rounds=$((rounds + 1))
+            call_backfill false /tmp/actual.json
+            stored=$(node -e "const j=require('/tmp/actual.json'); process.stdout.write(String(Number(j.stored||0)))")
+            fetched=$(node -e "const j=require('/tmp/actual.json'); process.stdout.write(String(Number(j.fetched||0)))")
+            total_stored=$((total_stored + stored))
+            echo "round=$rounds fetched=$fetched stored=$stored total_stored=$total_stored"
+            call_backfill true /tmp/dry.json
+            missing=$(node -e "const j=require('/tmp/dry.json'); process.stdout.write(String(Number(j.missing||0)))")
+            echo "remaining_missing=$missing"
+            if [[ "$stored" -eq 0 ]]; then
+              echo 'no_progress=true'
+              break
+            fi
+            sleep 5
+          done
+
+          code=$(curl -sS --max-time 60 -o /tmp/series.json -w '%{http_code}' \
+            -H "x-api-key: $API_KEY" "$BASE_URL/api/competition-price-series" || true)
+          [[ "$code" == "200" ]]
+          node - <<'NODE'
+          const fs = require('fs');
+          const payload = JSON.parse(fs.readFileSync('/tmp/series.json', 'utf8'));
+          const map = payload.data || payload || {};
+          const requested = ['143','149','150','152','154','155','156','157','158','159'];
+          const selected = Object.fromEntries(requested.map(id => [id, Array.isArray(map[id]?.points) ? map[id].points.length : 0]));
+          const totalPoints = Object.values(map).reduce((sum, series) => sum + (Array.isArray(series?.points) ? series.points.length : 0), 0);
+          console.log(JSON.stringify({series: Object.keys(map).length, totalPoints, selected}, null, 2));
+          NODE
