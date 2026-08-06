@@ -34,19 +34,21 @@ jobs:
       - name: Apply runtime patch
         run: python scripts/patch-dual-price-runtime.py
       - name: Syntax
-        run: node --check index.js
+        run: |
+          node --check index.js
+          node --check lib/competition-price-series.js
       - name: Price boundary tests
         run: node --test test/competition-price-series.test.js
       - name: Diff whitespace
         run: git diff --check
       - name: Commit runtime patch
         run: |
-          if git diff --quiet -- index.js; then
+          if git diff --quiet -- index.js lib/competition-price-series.js; then
             echo 'Runtime source was not changed' >&2
             exit 1
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add index.js
+          git add index.js lib/competition-price-series.js
           git commit -m 'Competition: serve dual Price boundaries'
           git push origin HEAD:chatgpt/competition-dual-price-boundaries
