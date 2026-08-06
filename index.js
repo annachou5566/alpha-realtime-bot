@@ -10,6 +10,7 @@ const gunzipAsync = promisify(zlib.gunzip);
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https'); 
 const {
+    buildViewBoundaries,
     buildTournamentBoundaries,
     chooseBoundaryPrice,
     reconcileBoundaryPoints,
@@ -603,28 +604,33 @@ async function syncTournamentPriceSeries(options = {}) {
             if (fetched >= maxFetches) break;
             const id = tournamentSeriesId(config);
             if (!id || !config.contract) continue;
+            const views = buildViewBoundaries(config);
             const boundaries = buildTournamentBoundaries(config);
-            if (!boundaries.length) continue;
+            if (!views || !boundaries.length) continue;
 
             const previous = PRICE_SERIES_CACHE[id] || {};
             const existing = {
                 ...previous,
-                version: 2,
-                boundaryModel: 'utc-calendar',
+                version: 3,
+                boundaryModel: 'dual',
                 id,
                 alphaId: config.alphaId || previous.alphaId || null,
                 symbol: config.symbol || config.name || previous.symbol || null,
                 startAt: boundaries[0].boundaryAt,
                 endAt: boundaries[boundaries.length - 1].boundaryAt,
+                views: {
+                    tournamentDay: views.tournamentDay,
+                    utcCalendar: views.utcCalendar,
+                },
                 points: reconcileBoundaryPoints(previous.points, boundaries),
             };
             if (stableJsonHash(previous) !== stableJsonHash(existing)) migrated += 1;
             if (!dryRun) PRICE_SERIES_CACHE[id] = existing;
-            const knownSlots = new Set(existing.points.map(point => Number(point.slot)));
+            const knownBoundaries = new Set(existing.points.map(point => Number(point.boundaryAt)));
 
             for (const boundary of boundaries) {
                 if (fetched >= maxFetches) break;
-                if (knownSlots.has(boundary.slot) || boundary.boundaryAt > now - 15_000) continue;
+                if (knownBoundaries.has(boundary.boundaryAt) || boundary.boundaryAt > now - 15_000) continue;
                 missing += 1;
                 if (dryRun) continue;
                 fetched += 1;
@@ -635,6 +641,9 @@ async function syncTournamentPriceSeries(options = {}) {
                     boundaryAt: boundary.boundaryAt,
                     date: boundary.date,
                     kind: boundary.kind,
+                    owners: boundary.owners,
+                    kinds: boundary.kinds,
+                    indices: boundary.indices,
                     observedAt: pricePoint.observedAt,
                     price: pricePoint.price,
                     quality: pricePoint.quality,
@@ -642,8 +651,8 @@ async function syncTournamentPriceSeries(options = {}) {
                     source: pricePoint.source,
                     resolution: pricePoint.resolution,
                 });
-                existing.points.sort((a, b) => a.slot - b.slot);
-                knownSlots.add(boundary.slot);
+                existing.points.sort((a, b) => Number(a.boundaryAt) - Number(b.boundaryAt));
+                knownBoundaries.add(boundary.boundaryAt);
                 PRICE_SERIES_CACHE[id] = existing;
                 stored += 1;
             }
@@ -661,7 +670,7 @@ app.get('/api/competition-price-series', (req, res) => {
         ? Object.fromEntries(requested.filter(id => PRICE_SERIES_CACHE[id]).map(id => [id, PRICE_SERIES_CACHE[id]]))
         : PRICE_SERIES_CACHE;
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=300');
-    res.json({ version: 2, boundaryModel: 'utc-calendar', updatedAt: PRICE_SERIES_LAST_UPDATED_AT || null, data });
+    res.json({ version: 3, boundaryModel: 'dual', updatedAt: PRICE_SERIES_LAST_UPDATED_AT || null, data });
 });
 
 app.post('/api/admin/backfill-competition-prices', async (req, res) => {
