@@ -30,3 +30,5 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /includeHistory: false, maxFetches: 40/);
     assert.doesNotMatch(source, /includeHistory: true, maxFetches: 100/);
 });
+
+// Clean canonical CI trigger after removing one-shot patch tooling.
