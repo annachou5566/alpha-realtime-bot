@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - chatgpt/competition-calendar-series
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
