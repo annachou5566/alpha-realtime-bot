@@ -1,18 +1,19 @@
-name: Patch Competition Price v3 fail closed
+name: Validate Competition Price v3 fail closed
 
 on:
   push:
     branches:
       - chatgpt/competition-dual-price-boundaries
     paths:
-      - 'scripts/patch-competition-price-no-fallback.py'
+      - 'lib/competition-price-series.js'
+      - 'test/competition-price-series.test.js'
       - '.github/workflows/patch-competition-price-no-fallback.yml'
 
 permissions:
   contents: write
 
 jobs:
-  patch-test-commit:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -23,20 +24,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply fail-closed patch
-        run: python scripts/patch-competition-price-no-fallback.py
-      - name: Test Price v3 boundaries
-        run: node --test test/competition-price-series.test.js
-      - name: Syntax checks
+      - name: Test and publish validation result
+        shell: bash
         run: |
-          node --check lib/competition-price-series.js
-          node --check index.js
-          git diff --check
-      - name: Commit source and remove one-shot tooling
-        run: |
+          set +e
+          : > competition-price-validation.log
+          status=0
+          node --test test/competition-price-series.test.js 2>&1 | tee -a competition-price-validation.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -eq 0 ]; then
+            node --check lib/competition-price-series.js 2>&1 | tee -a competition-price-validation.log
+            status=${PIPESTATUS[0]}
+          fi
+          if [ "$status" -eq 0 ]; then
+            node --check index.js 2>&1 | tee -a competition-price-validation.log
+            status=${PIPESTATUS[0]}
+          fi
+          if [ "$status" -eq 0 ]; then
+            git diff --check 2>&1 | tee -a competition-price-validation.log
+            status=${PIPESTATUS[0]}
+          fi
+          echo "VALIDATION_STATUS=$status" | tee -a competition-price-validation.log
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add lib/competition-price-series.js test/competition-price-series.test.js
-          git rm scripts/patch-competition-price-no-fallback.py .github/workflows/patch-competition-price-no-fallback.yml
-          git commit -m 'fix: require official Competition multipliers for Price v3'
-          git push origin HEAD:chatgpt/competition-dual-price-boundaries
+          git add competition-price-validation.log
+          if ! git diff --cached --quiet; then
+            git commit -m 'test: record Price v3 fail-closed validation'
+            git push origin HEAD:chatgpt/competition-dual-price-boundaries
+          fi
+          exit "$status"
