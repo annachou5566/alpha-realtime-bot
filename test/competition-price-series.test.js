@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
     DAY_MS,
+    getCompetitionMultipliers,
     buildTournamentBuckets,
     buildTournamentDayBuckets,
     buildViewBoundaries,
@@ -70,6 +71,28 @@ test('same-day competition has one partial calendar and one partial Day bucket',
     assert.equal(buildTournamentBuckets(sameDay).length, 1);
     assert.equal(buildTournamentDayBuckets(sameDay).length, 1);
     assert.equal(buildTournamentDayBuckets(sameDay)[0].endAt, Date.parse('2026-08-06T13:00:00Z'));
+});
+
+test('missing official multipliers produces no DAY series or dual boundaries', () => {
+    const missing = {
+        start: '2026-08-04', startTime: '13:00',
+        end: '2026-08-11', endTime: '13:00',
+        earlyBird: '1.4x',
+    };
+    assert.deepEqual(getCompetitionMultipliers(missing), []);
+    assert.deepEqual(buildTournamentDayBuckets(missing), []);
+    assert.equal(buildViewBoundaries(missing), null);
+    assert.deepEqual(buildTournamentBoundaries(missing), []);
+});
+
+test('invalid multiplier arrays fail closed instead of coercing values to one', () => {
+    const invalid = {
+        start: '2026-08-04', startTime: '13:00',
+        end: '2026-08-11', endTime: '13:00',
+        multipliers: [2, '', null, 1],
+    };
+    assert.deepEqual(getCompetitionMultipliers(invalid), []);
+    assert.deepEqual(buildTournamentDayBuckets(invalid), []);
 });
 
 test('boundary price rejects recent candles when a historical endpoint ignores endTime', () => {
