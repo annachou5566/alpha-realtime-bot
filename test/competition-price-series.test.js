@@ -7,6 +7,7 @@ const {
     buildTournamentBoundaries,
     chooseBoundaryPrice,
     normalizeKlineRows,
+    reconcileBoundaryPoints,
 } = require('../lib/competition-price-series');
 
 test('seven-day competition is split into eight UTC calendar buckets', () => {
@@ -71,4 +72,29 @@ test('boundary price uses exact candle open and normalizes second timestamps', (
         driftMs: 0,
         quality: 'exact',
     });
+});
+
+test('calendar-series migration drops legacy start-plus-24h points and keeps exact UTC boundaries', () => {
+    const boundaries = buildTournamentBoundaries({
+        start: '2026-08-04', startTime: '13:00',
+        end: '2026-08-11', endTime: '13:00',
+    });
+    const legacy = [
+        { slot: 0, boundaryAt: Date.parse('2026-08-04T13:00:00Z'), price: 1 },
+        { slot: 1, boundaryAt: Date.parse('2026-08-05T13:00:00Z'), price: 2 },
+        { slot: 2, boundaryAt: Date.parse('2026-08-06T13:00:00Z'), price: 3 },
+    ];
+    const kept = reconcileBoundaryPoints(legacy, boundaries);
+    assert.deepEqual(kept.map(point => point.slot), [0]);
+    assert.equal(kept[0].kind, 'start');
+
+    const exact = boundaries.slice(0, 3).map((boundary, index) => ({
+        slot: boundary.slot,
+        boundaryAt: boundary.boundaryAt,
+        price: index + 1,
+    }));
+    assert.deepEqual(
+        reconcileBoundaryPoints(exact, boundaries).map(point => point.date),
+        ['2026-08-04', '2026-08-04', '2026-08-05'],
+    );
 });

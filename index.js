@@ -12,6 +12,7 @@ const https = require('https');
 const {
     buildTournamentBoundaries,
     chooseBoundaryPrice,
+    reconcileBoundaryPoints,
     stableJsonHash,
 } = require('./lib/competition-price-series');
 
@@ -525,6 +526,7 @@ async function syncTournamentPriceSeries(options = {}) {
     let fetched = 0;
     let stored = 0;
     let missing = 0;
+    let migrated = 0;
 
     try {
         const configs = [
@@ -538,15 +540,21 @@ async function syncTournamentPriceSeries(options = {}) {
             const boundaries = buildTournamentBoundaries(config);
             if (!boundaries.length) continue;
 
-            const existing = PRICE_SERIES_CACHE[id] || {
+            const previous = PRICE_SERIES_CACHE[id] || {};
+            const existing = {
+                ...previous,
+                version: 2,
+                boundaryModel: 'utc-calendar',
                 id,
-                alphaId: config.alphaId || null,
-                symbol: config.symbol || config.name || null,
+                alphaId: config.alphaId || previous.alphaId || null,
+                symbol: config.symbol || config.name || previous.symbol || null,
                 startAt: boundaries[0].boundaryAt,
                 endAt: boundaries[boundaries.length - 1].boundaryAt,
-                points: [],
+                points: reconcileBoundaryPoints(previous.points, boundaries),
             };
-            const knownSlots = new Set((existing.points || []).map(point => Number(point.slot)));
+            if (stableJsonHash(previous) !== stableJsonHash(existing)) migrated += 1;
+            PRICE_SERIES_CACHE[id] = existing;
+            const knownSlots = new Set(existing.points.map(point => Number(point.slot)));
 
             for (const boundary of boundaries) {
                 if (fetched >= maxFetches) break;
@@ -559,6 +567,8 @@ async function syncTournamentPriceSeries(options = {}) {
                 existing.points.push({
                     slot: boundary.slot,
                     boundaryAt: boundary.boundaryAt,
+                    date: boundary.date,
+                    kind: boundary.kind,
                     observedAt: pricePoint.observedAt,
                     price: pricePoint.price,
                     quality: pricePoint.quality,
@@ -572,8 +582,8 @@ async function syncTournamentPriceSeries(options = {}) {
                 stored += 1;
             }
         }
-        if (!dryRun && stored > 0) await persistPriceSeriesToR2();
-        return { skipped: false, fetched, stored, missing, series: Object.keys(PRICE_SERIES_CACHE).length };
+        if (!dryRun && (stored > 0 || migrated > 0)) await persistPriceSeriesToR2();
+        return { skipped: false, fetched, stored, migrated, missing, series: Object.keys(PRICE_SERIES_CACHE).length };
     } finally {
         PRICE_SERIES_SYNC_RUNNING = false;
     }
@@ -585,7 +595,7 @@ app.get('/api/competition-price-series', (req, res) => {
         ? Object.fromEntries(requested.filter(id => PRICE_SERIES_CACHE[id]).map(id => [id, PRICE_SERIES_CACHE[id]]))
         : PRICE_SERIES_CACHE;
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=300');
-    res.json({ version: 1, updatedAt: PRICE_SERIES_LAST_UPDATED_AT || null, data });
+    res.json({ version: 2, boundaryModel: 'utc-calendar', updatedAt: PRICE_SERIES_LAST_UPDATED_AT || null, data });
 });
 
 app.post('/api/admin/backfill-competition-prices', async (req, res) => {
@@ -1742,10 +1752,10 @@ server.listen(PORT, async () => {
     }
 
     (async () => {
-        const dryRun = await syncTournamentPriceSeries({ includeHistory: true, maxFetches: 100, dryRun: true });
+        const dryRun = await syncTournamentPriceSeries({ includeHistory: false, maxFetches: 40, dryRun: true });
         console.log('[PRICE-BACKFILL] startup dry-run', dryRun);
         if (Number(dryRun.missing || 0) > 0) {
-            const result = await syncTournamentPriceSeries({ includeHistory: true, maxFetches: 100 });
+            const result = await syncTournamentPriceSeries({ includeHistory: false, maxFetches: 40 });
             console.log('[PRICE-BACKFILL] startup result', result);
         }
     })()
