@@ -26,6 +26,7 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /BANDWIDTH_STEADY_BASELINE = captureBandwidthBaseline/);
     assert.match(source, /`&endTime=\$\{boundaryAt \+ attempt\.maxDriftMs\}`/);
     assert.doesNotMatch(source, /`&startTime=\$\{Math\.max\(0, boundaryAt - attempt\.maxDriftMs\)\}`/);
-    assert.match(source, /includeHistory: true, maxFetches: 100, dryRun: true/);
-    assert.match(source, /includeHistory: true, maxFetches: 100/);
+    assert.match(source, /includeHistory: false, maxFetches: 40, dryRun: true/);
+    assert.match(source, /includeHistory: false, maxFetches: 40/);
+    assert.doesNotMatch(source, /includeHistory: true, maxFetches: 100/);
 });
