@@ -36,4 +36,4 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /Number\(dryRun\.missing \|\| 0\) > 0 \|\| Number\(dryRun\.migrated \|\| 0\) > 0/);
 });
 
-// Clean canonical CI trigger after removing one-shot patch tooling.
+// Canonical CI trigger for the final reviewed rollout head.
