@@ -26,6 +26,14 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /BANDWIDTH_STEADY_BASELINE = captureBandwidthBaseline/);
     assert.match(source, /`&endTime=\$\{boundaryAt \+ attempt\.maxDriftMs\}`/);
     assert.doesNotMatch(source, /`&startTime=\$\{Math\.max\(0, boundaryAt - attempt\.maxDriftMs\)\}`/);
-    assert.match(source, /includeHistory: true, maxFetches: 100, dryRun: true/);
-    assert.match(source, /includeHistory: true, maxFetches: 100/);
+    assert.match(source, /includeHistory: false, maxFetches: 40, dryRun: true/);
+    assert.match(source, /includeHistory: false, maxFetches: 40/);
+    assert.doesNotMatch(source, /includeHistory: true, maxFetches: 100/);
+    assert.match(source, /async function ensurePriceSeriesBackup\(\)/);
+    assert.match(source, /backups\/competition-price-series\/\$\{sourceHash\}\.json/);
+    assert.match(source, /await ensurePriceSeriesBackup\(\);/);
+    assert.match(source, /if \(!dryRun\) PRICE_SERIES_CACHE\[id\] = existing;/);
+    assert.match(source, /Number\(dryRun\.missing \|\| 0\) > 0 \|\| Number\(dryRun\.migrated \|\| 0\) > 0/);
 });
+
+// Canonical CI trigger for the final reviewed rollout head.
