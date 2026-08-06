@@ -43,7 +43,7 @@ replace_once(
 )
 replace_once(
     "                    kind: boundary.kind,\n",
-    "                    kind: boundary.owners.length > 1 ? 'shared' : boundary.kinds[boundary.owners[0]],\n                    owners: boundary.owners,\n                    kinds: boundary.kinds,\n                    indices: boundary.indices,\n",
+    "                    kind: boundary.kind,\n                    owners: boundary.owners,\n                    kinds: boundary.kinds,\n                    indices: boundary.indices,\n",
     'point ownership',
 )
 replace_once(
@@ -58,4 +58,25 @@ replace_once(
 )
 
 path.write_text(text, encoding='utf-8')
-print(f'patched {path}')
+
+lib_path = Path('lib/competition-price-series.js')
+lib = lib_path.read_text(encoding='utf-8')
+old = """    return [...ownersByTimestamp.values()]
+        .sort((a, b) => a.boundaryAt - b.boundaryAt)
+        .map((boundary, slot) => ({ ...boundary, slot }));
+"""
+new = """    return [...ownersByTimestamp.values()]
+        .sort((a, b) => a.boundaryAt - b.boundaryAt)
+        .map((boundary, slot) => ({
+            ...boundary,
+            slot,
+            kind: boundary.owners.length > 1
+                ? 'shared'
+                : boundary.kinds[boundary.owners[0]],
+        }));
+"""
+count = lib.count(old)
+if count != 1:
+    raise SystemExit(f'boundary kind: expected 1 match, found {count}')
+lib_path.write_text(lib.replace(old, new, 1), encoding='utf-8')
+print(f'patched {path} and {lib_path}')
