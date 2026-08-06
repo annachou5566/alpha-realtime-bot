@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# One-shot source finalizer; removed after the product commit is verified.
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
