@@ -2,6 +2,11 @@ name: Apply Competition Price contract resolution
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - chatgpt/competition-price-contract-resolution
+    paths:
+      - '.github/workflows/apply-competition-price-contract-resolution.yml'
 
 permissions:
   contents: write
