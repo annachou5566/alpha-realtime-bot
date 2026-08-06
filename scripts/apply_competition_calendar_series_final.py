@@ -160,5 +160,5 @@ test('calendar-series migration drops legacy start-plus-24h points and keeps exa
 });
 """
 if "calendar-series migration drops legacy" not in test:
-    test = test.rstrip() + extra_test + "\n"
+    test = test.rstrip() + extra_test.rstrip() + "\n"
 test_path.write_text(test)
