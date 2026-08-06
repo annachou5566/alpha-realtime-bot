@@ -461,9 +461,75 @@ async function syncPriceSeriesFromR2() {
     }
 }
 
+let PRICE_SERIES_BACKUP_STATE = { ready: false, key: null, sourceHash: null, status: 'pending' };
+
+function isMissingR2Object(error) {
+    const status = Number(error && error.$metadata && error.$metadata.httpStatusCode);
+    return status === 404 || ['NoSuchKey', 'NotFound'].includes(String(error && error.name || ''));
+}
+
+async function ensurePriceSeriesBackup() {
+    if (PRICE_SERIES_BACKUP_STATE.ready) return PRICE_SERIES_BACKUP_STATE;
+
+    let sourceObject;
+    try {
+        sourceObject = await s3Client.send(new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: PRICE_SERIES_KEY,
+        }));
+    } catch (error) {
+        if (!isMissingR2Object(error)) throw error;
+        PRICE_SERIES_BACKUP_STATE = {
+            ready: true,
+            key: null,
+            sourceHash: null,
+            status: 'source-missing',
+        };
+        console.log('[PRICE-BACKUP] source object missing; first write may proceed');
+        return PRICE_SERIES_BACKUP_STATE;
+    }
+
+    const raw = await sourceObject.Body.transformToString();
+    let parsed;
+    try {
+        parsed = JSON.parse(raw) || {};
+    } catch (error) {
+        throw new Error(`Refusing Price write because the existing R2 object is invalid JSON: ${error.message}`);
+    }
+
+    const sourceHash = stableJsonHash(parsed);
+    const backupKey = `backups/competition-price-series/${sourceHash}.json`;
+    let status = 'existing';
+    try {
+        await s3Client.send(new HeadObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: backupKey,
+        }));
+    } catch (error) {
+        if (!isMissingR2Object(error)) throw error;
+        await s3Client.send(new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: backupKey,
+            Body: raw,
+            ContentType: 'application/json',
+            CacheControl: 'no-cache, no-store, must-revalidate',
+            Metadata: {
+                source: PRICE_SERIES_KEY,
+                sourcehash: sourceHash,
+            },
+        }));
+        status = 'created';
+    }
+
+    PRICE_SERIES_BACKUP_STATE = { ready: true, key: backupKey, sourceHash, status };
+    console.log(`[PRICE-BACKUP] ${status}: ${backupKey}`);
+    return PRICE_SERIES_BACKUP_STATE;
+}
+
 async function persistPriceSeriesToR2() {
     const nextHash = stableJsonHash(PRICE_SERIES_CACHE);
     if (nextHash === PRICE_SERIES_LAST_HASH) return false;
+    await ensurePriceSeriesBackup();
     const body = JSON.stringify(PRICE_SERIES_CACHE);
     await s3Client.send(new PutObjectCommand({
         Bucket: process.env.R2_BUCKET_NAME,
@@ -553,7 +619,7 @@ async function syncTournamentPriceSeries(options = {}) {
                 points: reconcileBoundaryPoints(previous.points, boundaries),
             };
             if (stableJsonHash(previous) !== stableJsonHash(existing)) migrated += 1;
-            PRICE_SERIES_CACHE[id] = existing;
+            if (!dryRun) PRICE_SERIES_CACHE[id] = existing;
             const knownSlots = new Set(existing.points.map(point => Number(point.slot)));
 
             for (const boundary of boundaries) {
@@ -1754,7 +1820,7 @@ server.listen(PORT, async () => {
     (async () => {
         const dryRun = await syncTournamentPriceSeries({ includeHistory: false, maxFetches: 40, dryRun: true });
         console.log('[PRICE-BACKFILL] startup dry-run', dryRun);
-        if (Number(dryRun.missing || 0) > 0) {
+        if (Number(dryRun.missing || 0) > 0 || Number(dryRun.migrated || 0) > 0) {
             const result = await syncTournamentPriceSeries({ includeHistory: false, maxFetches: 40 });
             console.log('[PRICE-BACKFILL] startup result', result);
         }

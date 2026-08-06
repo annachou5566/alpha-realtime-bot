@@ -29,6 +29,11 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /includeHistory: false, maxFetches: 40, dryRun: true/);
     assert.match(source, /includeHistory: false, maxFetches: 40/);
     assert.doesNotMatch(source, /includeHistory: true, maxFetches: 100/);
+    assert.match(source, /async function ensurePriceSeriesBackup\(\)/);
+    assert.match(source, /backups\/competition-price-series\/\$\{sourceHash\}\.json/);
+    assert.match(source, /await ensurePriceSeriesBackup\(\);/);
+    assert.match(source, /if \(!dryRun\) PRICE_SERIES_CACHE\[id\] = existing;/);
+    assert.match(source, /Number\(dryRun\.missing \|\| 0\) > 0 \|\| Number\(dryRun\.migrated \|\| 0\) > 0/);
 });
 
 // Clean canonical CI trigger after removing one-shot patch tooling.
