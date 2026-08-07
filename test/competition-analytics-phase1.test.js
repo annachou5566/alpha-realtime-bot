@@ -33,6 +33,8 @@ const {
 
 Module._load = originalLoad;
 
+const EXPECTED_WEIGHTED_VWAP = 40 / 3;
+
 test('reward boundary uses exact tournament end UTC time', () => {
     assert.equal(
         parseRewardAt({ end: '2026-08-06', endTime: '13:00' }),
@@ -45,7 +47,7 @@ test('VWAP uses typical price weighted by real volume', () => {
         { high: 12, low: 9, close: 9, volume: 2 },
         { high: 24, low: 18, close: 18, volume: 1 },
     ];
-    assert.equal(computeVwap(rows), 14);
+    assert.equal(computeVwap(rows), EXPECTED_WEIGHTED_VWAP);
     assert.equal(computeVwap([{ high: 1, low: 1, close: 1, volume: 0 }]), null);
 });
 
@@ -59,7 +61,7 @@ test('five-minute candles aggregate into independent hourly VWAP points', () => 
     const hourly = aggregateHourlyVwap(rows);
     assert.equal(hourly.length, 2);
     assert.equal(hourly[0].hourAt, base);
-    assert.equal(hourly[0].vwap, 14);
+    assert.equal(hourly[0].vwap, EXPECTED_WEIGHTED_VWAP);
     assert.equal(hourly[1].vwap, 4);
 });
 
