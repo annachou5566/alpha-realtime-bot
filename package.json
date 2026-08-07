@@ -4,8 +4,8 @@
   "description": "Realtime Layer 2 for Alpha Trading",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "node --check index.js && node --test"
+    "start": "node competition-analytics-entry.js",
+    "test": "node --check index.js && node --check competition-analytics-entry.js && node --check lib/competition-analytics-phase1.js && node --test"
   },
   "dependencies": {
     "express": "^4.18.2",
