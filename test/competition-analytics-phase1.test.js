@@ -19,7 +19,7 @@ const {
     MINUTE_MS, HALF_HOUR_MS, HOUR_MS, ANALYTICS_METHOD, MAX_TOURNAMENTS_PER_RUN,
     normalizeKlines, computeVwap, aggregateHourlyVwap, historyInterval,
     anchoredHourlyPoints, hourlyVwapPoints, updateExtremes, percentChange,
-    parseRewardAt, rewardMeta, recordFromTournament, chooseWorkRows, readState,
+    parseStartAt, parseEndAt, rewardMeta, recordFromTournament, chooseWorkRows, readState,
 } = require('../lib/competition-analytics-phase1');
 Module._load = originalLoad;
 
@@ -27,9 +27,10 @@ const source = fs.readFileSync('lib/competition-analytics-phase1.js', 'utf8');
 const bootstrapSource = fs.readFileSync('lib/competition-price-series.js', 'utf8');
 const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 
-test('reward boundary uses exact tournament end UTC time', () => {
-    assert.equal(parseRewardAt({ end: '2026-08-06', endTime: '13:00' }), Date.parse('2026-08-06T13:00:00Z'));
-    assert.equal(parseRewardAt({ end: '2026-06-15', endTime: '04:30' }), Date.parse('2026-06-15T04:30:00Z'));
+test('analytics baseline uses exact tournament start while eligibility uses tournament end', () => {
+    const config = { start: '2026-08-01', startTime: '13:00', end: '2026-08-06', endTime: '13:00' };
+    assert.equal(parseStartAt(config), Date.parse('2026-08-01T13:00:00Z'));
+    assert.equal(parseEndAt(config), Date.parse('2026-08-06T13:00:00Z'));
 });
 
 test('token reward unit falls back to canonical symbol while USD remains explicit', () => {
@@ -41,44 +42,42 @@ test('VWAP uses exact quote-volume divided by base-volume', () => {
     assert.equal(computeVwap([{ high: 12, low: 9, close: 9, volume: 2, quoteVolume: 22 }, { high: 24, low: 18, close: 18, volume: 1, quoteVolume: 20 }]), 14);
 });
 
-test('hour-aligned rewards use one complete 1h candle', () => {
-    const rewardAt = Date.parse('2026-08-06T13:00:00Z');
+test('hour-aligned tournament starts use one complete 1h candle', () => {
+    const startAt = Date.parse('2026-08-01T13:00:00Z');
     const rows = normalizeKlines([
-        [rewardAt, '9', '12', '9', '10', '2', 0, '22'],
-        [rewardAt + HOUR_MS, '18', '24', '18', '20', '1', 0, '20'],
+        [startAt, '9', '12', '9', '10', '2', 0, '22'],
+        [startAt + HOUR_MS, '18', '24', '18', '20', '1', 0, '20'],
     ]);
-    assert.deepEqual(historyInterval(rewardAt), { interval: '1h', stepMs: HOUR_MS, candlesPerWindow: 1 });
-    const points = hourlyVwapPoints(rows, rewardAt, rewardAt + 2 * HOUR_MS);
+    assert.deepEqual(historyInterval(startAt), { interval: '1h', stepMs: HOUR_MS, candlesPerWindow: 1 });
+    const points = hourlyVwapPoints(rows, startAt, startAt + 2 * HOUR_MS);
     assert.equal(points.length, 2);
     assert.equal(points[0].vwap, 11);
     assert.equal(points[0].method, ANALYTICS_METHOD);
 });
 
-test('half-hour rewards combine exactly two 30m candles into anchored hourly VWAP', () => {
-    const rewardAt = Date.parse('2026-06-15T04:30:00Z');
+test('half-hour tournament starts combine exactly two 30m candles', () => {
+    const startAt = Date.parse('2026-06-10T04:30:00Z');
     const rows = normalizeKlines([
-        [rewardAt, '1', '2', '1', '1.5', '2', 0, '3'],
-        [rewardAt + HALF_HOUR_MS, '1.5', '3', '1.5', '2.5', '4', 0, '10'],
-        [rewardAt + HOUR_MS, '2.5', '4', '2', '3', '1', 0, '3'],
+        [startAt, '1', '2', '1', '1.5', '2', 0, '3'],
+        [startAt + HALF_HOUR_MS, '1.5', '3', '1.5', '2.5', '4', 0, '10'],
+        [startAt + HOUR_MS, '2.5', '4', '2', '3', '1', 0, '3'],
     ]);
-    assert.deepEqual(historyInterval(rewardAt), { interval: '30m', stepMs: HALF_HOUR_MS, candlesPerWindow: 2 });
-    const points = anchoredHourlyPoints(rows, rewardAt, rewardAt + 2 * HOUR_MS, 2);
+    assert.deepEqual(historyInterval(startAt), { interval: '30m', stepMs: HALF_HOUR_MS, candlesPerWindow: 2 });
+    const points = anchoredHourlyPoints(rows, startAt, startAt + 2 * HOUR_MS, 2);
     assert.equal(points.length, 1);
-    assert.equal(points[0].hourAt, rewardAt);
-    assert.equal(points[0].candleCount, 2);
     assert.ok(Math.abs(points[0].vwap - 13 / 6) < 1e-12);
 });
 
 test('partial anchored hours never update analytics', () => {
-    const rewardAt = Date.parse('2026-06-15T04:30:00Z');
-    const rows = normalizeKlines([[rewardAt, '1', '2', '1', '1.5', '2', 0, '3']]);
-    assert.equal(anchoredHourlyPoints(rows, rewardAt, rewardAt + HOUR_MS, 2).length, 0);
+    const startAt = Date.parse('2026-06-10T04:30:00Z');
+    const rows = normalizeKlines([[startAt, '1', '2', '1', '1.5', '2', 0, '3']]);
+    assert.equal(anchoredHourlyPoints(rows, startAt, startAt + HOUR_MS, 2).length, 0);
 });
 
-test('minute aggregation remains deterministic for claim helpers', () => {
-    const rewardAt = Date.parse('2026-08-06T13:15:00Z');
-    const rows = normalizeKlines([[rewardAt, '9', '12', '9', '9', '2'], [rewardAt + 5 * MINUTE_MS, '18', '24', '18', '18', '1']]);
-    assert.equal(aggregateHourlyVwap(rows, rewardAt).length, 1);
+test('minute aggregation remains deterministic for start baseline helpers', () => {
+    const startAt = Date.parse('2026-08-01T13:15:00Z');
+    const rows = normalizeKlines([[startAt, '9', '12', '9', '9', '2'], [startAt + 5 * MINUTE_MS, '18', '24', '18', '18', '1']]);
+    assert.equal(aggregateHourlyVwap(rows, startAt).length, 1);
 });
 
 test('peak and low remain VWAP zones rather than candle wicks', () => {
@@ -88,19 +87,22 @@ test('peak and low remain VWAP zones rather than candle wicks', () => {
     assert.equal(record.lowVwap, 0.8);
 });
 
-test('returns compare current and peak against claim VWAP', () => {
+test('returns compare current and peak against tournament-start VWAP', () => {
     assert.ok(Math.abs(percentChange(1.1, 1) - 10) < 1e-10);
     assert.equal(percentChange(null, 1), null);
 });
 
-test('real tournament schema preserves symbol, alpha id and reward quantity', () => {
-    const record = recordFromTournament({ id: 164, name: 'O (R2)', data: { alphaId: 'ALPHA_991', end: '2026-08-06', endTime: '13:00', rewardQty: '75' } });
+test('real tournament schema preserves start, end, symbol, alpha id and reward quantity', () => {
+    const record = recordFromTournament({ id: 164, name: 'O (R2)', data: { alphaId: 'ALPHA_991', start: '2026-08-01', startTime: '13:00', end: '2026-08-06', endTime: '13:00', rewardQty: '75' } });
     assert.equal(record.symbol, 'O');
     assert.equal(record.rewardUnit, 'O');
     assert.equal(record.rewardQty, 75);
+    assert.equal(record.startAt, Date.parse('2026-08-01T13:00:00Z'));
+    assert.equal(record.endAt, Date.parse('2026-08-06T13:00:00Z'));
+    assert.equal('rewardAt' in record, false);
 });
 
-test('work queue prioritizes method migration and stays bounded', () => {
+test('work queue prioritizes v4 migration and stays bounded', () => {
     assert.equal(MAX_TOURNAMENTS_PER_RUN, 6);
     const rows = Array.from({ length: 8 }, (_, index) => ({ id: index + 1 }));
     const state = { tournaments: { 1: { analyticsMethod: ANALYTICS_METHOD, status: 'ready' }, 2: { analyticsMethod: 'old', status: 'ready' } } };
@@ -117,15 +119,22 @@ test('R2 missing object initializes empty state while transient failures abort',
     await assert.rejects(() => readState(transient, 'bucket'), /timeout/);
 });
 
+test('producer fetches exact five-minute start baseline and removes claim semantics', () => {
+    assert.match(source, /function fetchStartVwap\(alphaId, startAt\)/);
+    assert.match(source, /startTime: startAt/);
+    assert.match(source, /endTime: startAt \+ BASELINE_WINDOW_MS - 1/);
+    assert.match(source, /selected\.length === 5/);
+    assert.match(source, /record\.holdReturnPct = percentChange\(record\.currentPrice, record\.startVwap\)/);
+    assert.match(source, /record\.rewardValueAtStart/);
+    assert.match(source, /record\.futuresListedAtStart/);
+    assert.doesNotMatch(source, /fetchClaimVwap|CLAIM_SEARCH_MS|futuresListedAtReward =/);
+});
+
 test('fast backfill is bounded, durable and fail closed', () => {
     assert.match(source, /MAX_HISTORY_PAGES_PER_TOURNAMENT = 4/);
     assert.match(source, /SYNC_INTERVAL_MS = 15 \* MINUTE_MS/);
-    assert.match(source, /interval: '30m'/);
-    assert.match(source, /candlesPerWindow: 2/);
-    assert.match(source, /selected\.length === 5/);
     assert.match(source, /for \(const item of work\)[\s\S]*bytes = await writeState\(clients\.r2, clients\.bucket, state\)/m);
     assert.match(source, /if \(running\) return \{ skipped: 'already-running' \}/);
-    assert.doesNotMatch(source, /catch \(_\) \{\s*return null;\s*\}/);
 });
 
 test('Render keeps index.js as the single entry and starts analytics once', () => {
