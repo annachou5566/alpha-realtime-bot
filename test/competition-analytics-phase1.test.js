@@ -36,6 +36,8 @@ const {
 Module._load = originalLoad;
 
 const source = fs.readFileSync('lib/competition-analytics-phase1.js', 'utf8');
+const bootstrapSource = fs.readFileSync('lib/competition-price-series.js', 'utf8');
+const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 const EXPECTED_WEIGHTED_VWAP = 40 / 3;
 
 test('reward boundary uses exact tournament end UTC time', () => {
@@ -122,4 +124,14 @@ test('claim, Futures and complete-hour contracts fail closed', () => {
     assert.match(source, /completedThrough = record\.rewardAt \+ Math\.floor/);
     assert.match(source, /point\.hourAt \+ HOUR_MS <= completedThrough/);
     assert.doesNotMatch(source, /catch \(_\) \{\s*return null;\s*\}/);
+});
+
+test('Render keeps index.js as the only entry and starts analytics exactly once', () => {
+    assert.equal(packageJson.scripts.start, 'node index.js');
+    assert.equal(fs.existsSync('competition-analytics-entry.js'), false);
+    assert.match(bootstrapSource, /require\.main && require\.main\.filename/);
+    assert.match(bootstrapSource, /\[\\\\\/\]index\\\.js\$/);
+    assert.match(bootstrapSource, /Symbol\.for\('wave-alpha\.competition-analytics-phase1\.started'\)/);
+    assert.match(bootstrapSource, /setImmediate\(\(\) =>/);
+    assert.match(bootstrapSource, /startCompetitionAnalyticsPhase1\(\)/);
 });
