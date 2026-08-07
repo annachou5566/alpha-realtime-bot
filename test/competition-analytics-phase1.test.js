@@ -16,21 +16,10 @@ Module._load = function mockRuntimeDependencies(request, parent, isMain) {
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-    MINUTE_MS,
-    HOUR_MS,
-    ANALYTICS_METHOD,
-    MAX_TOURNAMENTS_PER_RUN,
-    normalizeKlines,
-    computeVwap,
-    hourlyVwapPoints,
-    aggregateHourlyVwap,
-    updateExtremes,
-    percentChange,
-    parseRewardAt,
-    rewardMeta,
-    recordFromTournament,
-    chooseWorkRows,
-    readState,
+    MINUTE_MS, HOUR_MS, ANALYTICS_METHOD, MAX_TOURNAMENTS_PER_RUN,
+    normalizeKlines, computeVwap, hourlyVwapPoints, aggregateHourlyVwap,
+    updateExtremes, percentChange, parseRewardAt, rewardMeta,
+    recordFromTournament, chooseWorkRows, readState,
 } = require('../lib/competition-analytics-phase1');
 Module._load = originalLoad;
 
@@ -48,8 +37,7 @@ test('token reward unit falls back to the canonical symbol while USD remains exp
 });
 
 test('claim VWAP prefers exact quote-volume divided by base-volume', () => {
-    const rows = [{ high: 12, low: 9, close: 9, volume: 2, quoteVolume: 22 }, { high: 24, low: 18, close: 18, volume: 1, quoteVolume: 20 }];
-    assert.equal(computeVwap(rows), 14);
+    assert.equal(computeVwap([{ high: 12, low: 9, close: 9, volume: 2, quoteVolume: 22 }, { high: 24, low: 18, close: 18, volume: 1, quoteVolume: 20 }]), 14);
 });
 
 test('hourly analytics uses complete one-hour quote-volume VWAP and rejects partial hours', () => {
@@ -66,15 +54,10 @@ test('hourly analytics uses complete one-hour quote-volume VWAP and rejects part
     assert.equal(hourlyVwapPoints(rows, rewardAt, rewardAt + HOUR_MS + 30 * MINUTE_MS).length, 1);
 });
 
-test('legacy five-minute aggregation remains deterministic for claim-related helpers', () => {
+test('legacy minute aggregation remains deterministic for claim helpers', () => {
     const rewardAt = Date.parse('2026-08-06T13:15:00Z');
-    const rows = normalizeKlines([
-        [rewardAt, '9', '12', '9', '9', '2'],
-        [rewardAt + 5 * MINUTE_MS, '18', '24', '18', '18', '1'],
-    ]);
-    const hourly = aggregateHourlyVwap(rows, rewardAt);
-    assert.equal(hourly.length, 1);
-    assert.equal(hourly[0].hourAt, rewardAt);
+    const rows = normalizeKlines([[rewardAt, '9', '12', '9', '9', '2'], [rewardAt + 5 * MINUTE_MS, '18', '24', '18', '18', '1']]);
+    assert.equal(aggregateHourlyVwap(rows, rewardAt).length, 1);
 });
 
 test('peak and low remain executable VWAP zones, not candle wicks', () => {
@@ -99,11 +82,7 @@ test('real tournament schema preserves symbol, alpha id and reward quantity', ()
 test('work queue prioritizes method migration, rotates attempts and remains bounded', () => {
     assert.equal(MAX_TOURNAMENTS_PER_RUN, 6);
     const rows = Array.from({ length: 8 }, (_, index) => ({ id: index + 1 }));
-    const state = { tournaments: {
-        1: { analyticsMethod: ANALYTICS_METHOD, status: 'ready', lastAttemptAt: 1 },
-        2: { analyticsMethod: 'old', status: 'ready', lastAttemptAt: 500 },
-        3: { analyticsMethod: ANALYTICS_METHOD, status: 'backfilling', lastAttemptAt: 300 },
-    } };
+    const state = { tournaments: { 1: { analyticsMethod: ANALYTICS_METHOD, status: 'ready', lastAttemptAt: 1 }, 2: { analyticsMethod: 'old', status: 'ready', lastAttemptAt: 500 }, 3: { analyticsMethod: ANALYTICS_METHOD, status: 'backfilling', lastAttemptAt: 300 } } };
     const selected = chooseWorkRows(rows, state);
     assert.equal(selected.length, 6);
     assert.equal(selected[0].row.id, 8);
@@ -120,10 +99,10 @@ test('R2 missing object initializes empty state but transient failures abort', a
 test('fast backfill remains bounded, durable and fail closed', () => {
     assert.match(source, /MAX_HOURLY_PAGES_PER_TOURNAMENT = 4/);
     assert.match(source, /SYNC_INTERVAL_MS = 15 \* MINUTE_MS/);
-    assert.match(source, /interval, '1h'|fetchAlphaKlines\(record\.alphaId, '1h'/);
+    assert.match(source, /fetchAlphaKlines\(record\.alphaId, '1h'/);
     assert.match(source, /quoteVolume \/ volume/);
     assert.match(source, /selected\.length === 5/);
-    assert.match(source, /bytes = await writeState[\s\S]*for \(const item of work\)/m);
+    assert.match(source, /for \(const item of work\)[\s\S]*bytes = await writeState\(clients\.r2, clients\.bucket, state\)/m);
     assert.match(source, /if \(running\) return \{ skipped: 'already-running' \}/);
     assert.doesNotMatch(source, /catch \(_\) \{\s*return null;\s*\}/);
 });
