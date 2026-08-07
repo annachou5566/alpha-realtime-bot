@@ -100,13 +100,14 @@ test('real tournament schema preserves symbol, alpha id and reward quantity', ()
     assert.equal(record.rewardQty, 75);
 });
 
-test('work queue migrates old methods first and stays bounded', () => {
+test('work queue prioritizes method migration and stays bounded', () => {
     assert.equal(MAX_TOURNAMENTS_PER_RUN, 6);
     const rows = Array.from({ length: 8 }, (_, index) => ({ id: index + 1 }));
     const state = { tournaments: { 1: { analyticsMethod: ANALYTICS_METHOD, status: 'ready' }, 2: { analyticsMethod: 'old', status: 'ready' } } };
     const selected = chooseWorkRows(rows, state);
     assert.equal(selected.length, 6);
-    assert.ok(selected.some(item => item.row.id === 2));
+    assert.ok(selected.every(item => item.existing.analyticsMethod !== ANALYTICS_METHOD));
+    assert.equal(selected.some(item => item.row.id === 1), false);
 });
 
 test('R2 missing object initializes empty state while transient failures abort', async () => {
