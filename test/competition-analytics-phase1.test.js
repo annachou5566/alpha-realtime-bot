@@ -1,5 +1,21 @@
 'use strict';
 
+const Module = require('node:module');
+const originalLoad = Module._load;
+Module._load = function mockRuntimeDependencies(request, parent, isMain) {
+    if (request === 'axios') return { get: async () => ({ data: null }) };
+    if (request === '@aws-sdk/client-s3') {
+        class Command { constructor(input) { this.input = input; } }
+        return {
+            S3Client: class { async send() { return {}; } },
+            GetObjectCommand: Command,
+            PutObjectCommand: Command,
+        };
+    }
+    if (request === '@supabase/supabase-js') return { createClient: () => ({}) };
+    return originalLoad.call(this, request, parent, isMain);
+};
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -14,6 +30,8 @@ const {
     recordFromTournament,
     chooseWorkRows,
 } = require('../lib/competition-analytics-phase1');
+
+Module._load = originalLoad;
 
 test('reward boundary uses exact tournament end UTC time', () => {
     assert.equal(
@@ -59,7 +77,7 @@ test('peak and low VWAP remain executable volume-weighted zones, not wick highs'
 });
 
 test('returns compare current and peak against claim VWAP', () => {
-    assert.equal(percentChange(1.1, 1), 10.000000000000009);
+    assert.ok(Math.abs(percentChange(1.1, 1) - 10) < 1e-10);
     assert.equal(percentChange(null, 1), null);
     assert.equal(percentChange(1, 0), null);
 });
