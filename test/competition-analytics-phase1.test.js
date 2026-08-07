@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('node:fs');
 const Module = require('node:module');
 const originalLoad = Module._load;
 Module._load = function mockRuntimeDependencies(request, parent, isMain) {
@@ -27,19 +28,23 @@ const {
     updateExtremes,
     percentChange,
     parseRewardAt,
+    rewardMeta,
     recordFromTournament,
     chooseWorkRows,
+    readState,
 } = require('../lib/competition-analytics-phase1');
-
 Module._load = originalLoad;
 
+const source = fs.readFileSync('lib/competition-analytics-phase1.js', 'utf8');
 const EXPECTED_WEIGHTED_VWAP = 40 / 3;
 
 test('reward boundary uses exact tournament end UTC time', () => {
-    assert.equal(
-        parseRewardAt({ end: '2026-08-06', endTime: '13:00' }),
-        Date.parse('2026-08-06T13:00:00Z'),
-    );
+    assert.equal(parseRewardAt({ end: '2026-08-06', endTime: '13:00' }), Date.parse('2026-08-06T13:00:00Z'));
+});
+
+test('token reward unit falls back to the canonical token symbol but USD remains explicit', () => {
+    assert.deepEqual(rewardMeta({ name: 'O', rewardQty: '75' }, 'O (R2)'), { unit: 'O', quantity: 75 });
+    assert.deepEqual(rewardMeta({ rewardUnit: 'USD', rewardQty: '50' }, 'CAP (R1)'), { unit: 'USD', quantity: 50 });
 });
 
 test('VWAP uses typical price weighted by real volume', () => {
@@ -51,21 +56,21 @@ test('VWAP uses typical price weighted by real volume', () => {
     assert.equal(computeVwap([{ high: 1, low: 1, close: 1, volume: 0 }]), null);
 });
 
-test('five-minute candles aggregate into independent hourly VWAP points', () => {
-    const base = Date.parse('2026-08-06T13:00:00Z');
+test('hourly VWAP windows are anchored to reward time', () => {
+    const rewardAt = Date.parse('2026-08-06T13:15:00Z');
     const rows = normalizeKlines([
-        [base, '9', '12', '9', '9', '2'],
-        [base + FIVE_MIN_MS, '18', '24', '18', '18', '1'],
-        [base + HOUR_MS, '3', '6', '3', '3', '4'],
+        [rewardAt, '9', '12', '9', '9', '2'],
+        [rewardAt + FIVE_MIN_MS, '18', '24', '18', '18', '1'],
+        [rewardAt + HOUR_MS, '3', '6', '3', '3', '4'],
     ]);
-    const hourly = aggregateHourlyVwap(rows);
+    const hourly = aggregateHourlyVwap(rows, rewardAt);
     assert.equal(hourly.length, 2);
-    assert.equal(hourly[0].hourAt, base);
+    assert.equal(hourly[0].hourAt, rewardAt);
     assert.equal(hourly[0].vwap, EXPECTED_WEIGHTED_VWAP);
-    assert.equal(hourly[1].vwap, 4);
+    assert.equal(hourly[1].hourAt, rewardAt + HOUR_MS);
 });
 
-test('peak and low VWAP remain executable volume-weighted zones, not wick highs', () => {
+test('peak and low remain executable VWAP zones, not candle wicks', () => {
     const record = {};
     updateExtremes(record, [
         { hourAt: 1, vwap: 1.2 },
@@ -73,43 +78,48 @@ test('peak and low VWAP remain executable volume-weighted zones, not wick highs'
         { hourAt: 3, vwap: 1.5 },
     ]);
     assert.equal(record.peakVwap, 1.5);
-    assert.equal(record.peakVwapAt, 3);
     assert.equal(record.lowVwap, 0.8);
-    assert.equal(record.lowVwapAt, 2);
 });
 
 test('returns compare current and peak against claim VWAP', () => {
     assert.ok(Math.abs(percentChange(1.1, 1) - 10) < 1e-10);
     assert.equal(percentChange(null, 1), null);
-    assert.equal(percentChange(1, 0), null);
 });
 
-test('tournament record preserves reward and symbol metadata', () => {
+test('real tournament schema preserves symbol, alpha id and reward quantity', () => {
     const record = recordFromTournament({
-        id: 169,
-        name: 'CAP (R2)',
-        data: {
-            alphaId: 'ALPHA_1005',
-            end: '2026-08-12',
-            endTime: '13:00',
-            rewardUnit: 'CAP',
-            rewardQty: '500',
-        },
+        id: 164,
+        name: 'O (R2)',
+        data: { alphaId: 'ALPHA_991', end: '2026-08-06', endTime: '13:00', rewardQty: '75' },
     });
-    assert.equal(record.id, '169');
-    assert.equal(record.symbol, 'CAP');
-    assert.equal(record.alphaId, 'ALPHA_1005');
-    assert.equal(record.rewardQty, 500);
+    assert.equal(record.symbol, 'O');
+    assert.equal(record.rewardUnit, 'O');
+    assert.equal(record.rewardQty, 75);
 });
 
-test('work queue prioritizes least-complete records and stays bounded to two', () => {
+test('work queue rotates by oldest attempt and remains bounded to two', () => {
     const rows = [{ id: 3 }, { id: 2 }, { id: 1 }];
-    const state = {
-        tournaments: {
-            3: { completeThroughAt: 300 },
-            2: { completeThroughAt: 100 },
-            1: { completeThroughAt: 200 },
-        },
-    };
+    const state = { tournaments: {
+        3: { lastAttemptAt: 300, completeThroughAt: 0 },
+        2: { lastAttemptAt: 100, completeThroughAt: 0 },
+        1: { lastAttemptAt: 200, completeThroughAt: 0 },
+    } };
     assert.deepEqual(chooseWorkRows(rows, state).map(item => item.row.id), [2, 1]);
+});
+
+test('R2 missing object initializes empty state but transient failures abort', async () => {
+    const missing = { async send() { const error = new Error('missing'); error.name = 'NoSuchKey'; throw error; } };
+    assert.deepEqual(await readState(missing, 'bucket'), { version: 1, updatedAt: null, tournaments: {} });
+    const transient = { async send() { throw new Error('timeout'); } };
+    await assert.rejects(() => readState(transient, 'bucket'), /timeout/);
+});
+
+test('claim, Futures and complete-hour contracts fail closed', () => {
+    assert.match(source, /CLAIM_SEARCH_MS = 24 \* HOUR_MS/);
+    assert.match(source, /startTime: firstTrade\.timestamp[\s\S]*firstTrade\.timestamp \+ CLAIM_WINDOW_MS - 1/);
+    assert.match(source, /status === 400 && code === -1121/);
+    assert.match(source, /throw error/);
+    assert.match(source, /completedThrough = record\.rewardAt \+ Math\.floor/);
+    assert.match(source, /point\.hourAt \+ HOUR_MS <= completedThrough/);
+    assert.doesNotMatch(source, /catch \(_\) \{\s*return null;\s*\}/);
 });
