@@ -7,6 +7,7 @@ const {
     installS3MutationGuard,
     installSupabaseMutationGuard,
 } = require('./lib/qualification-mode');
+const { loadHardenedIndex } = require('./lib/qualification-source-hardening');
 
 const state = prepareQualificationEnv(process.env);
 
@@ -18,4 +19,5 @@ installS3MutationGuard(S3Client);
 installSupabaseMutationGuard(globalThis, process.env.SUPABASE_URL);
 
 console.log('[QUALIFICATION] Wave Alpha Oracle candidate starting', state);
-require('./index');
+const loaded = loadHardenedIndex(require.resolve('./index'));
+console.log('[QUALIFICATION] Source hardening applied', loaded.applied);
