@@ -20,8 +20,12 @@ This repository owns the Alpha Realtime Bot implementation and the current Rende
 4. `ORACLE_E2_MIGRATION_PHASE2.md`.
 5. `ORACLE_E2_MIGRATION_PHASE2B.md`.
 6. `ORACLE_E2_MIGRATION_HANDOFF_2026-09-01.md`.
-7. `ORACLE_E2_MIGRATION_PHASE3_5_PLAN_2026-09-01.md`.
-8. Exact current PR metadata/head/runtime evidence.
+7. `ORACLE_E2_MIGRATION_HEADROOM_LEDGER_2026-09-01.md`.
+8. `ORACLE_E2_MIGRATION_PHASE3_5_FINAL_PLAN_2026-09-01.md`.
+9. `MASTER_HANDOFF_PROMPT_ORACLE_E2_PHASE3_2026-09-01.md` when opening a new chat.
+10. Exact current PR metadata/head/runtime evidence.
+
+`ORACLE_E2_MIGRATION_PHASE3_5_PLAN_2026-09-01.md` is the earlier proposed plan and is superseded for execution by the reviewed FINAL plan above.
 
 Never trust an old chat SHA, branch label, token, preview URL or runtime assumption over newer GitHub/runtime evidence.
 
@@ -31,7 +35,7 @@ Never trust an old chat SHA, branch label, token, preview URL or runtime assumpt
 Phase 1   CLOSED / PASS
 Phase 2A  CLOSED / PASS
 Phase 2B  CLOSED / PASS
-Phase 3   NOT STARTED — approval-gated
+Phase 3   NOT STARTED — approval-gated mutations
 Phase 4   NOT STARTED — multiple Production approval gates
 Phase 5   NOT STARTED — post-cutover only
 ```
@@ -45,11 +49,21 @@ micro-server-auto-2
 VM.Standard.E2.1.Micro
 Ubuntu 24.04 Minimal
 Singapore
-Alpha qualification service: inactive
-port 3100: absent
+Alpha qualification service: inactive at Phase 2B closeout
+port 3100: absent at Phase 2B closeout
 ```
 
 Phase 2B proved OCI Vault + instance principal with a random qualification marker only. The qualification secret is `PENDING_DELETION`; its exact-secret qualification policy was removed. A Free-compatible DEFAULT Vault, SOFTWARE key and exact-instance Dynamic Group are retained for later reviewed use. No Production credential was provisioned or used.
+
+## Headroom reuse rule
+
+Do not rerun completed headroom checks merely because a new chat starts. Use `ORACLE_E2_MIGRATION_HEADROOM_LEDGER_2026-09-01.md` as the current evidence ledger.
+
+- CLOSED/PASS OCI Vault/KMS/secret qualification is reused and is not part of Phase 3 preflight.
+- Phase 3 must not recheck unrelated R2/Pages/Workers headroom.
+- Phase 3B checks only the Zero Trust/Access/Tunnel resource classes not previously qualified, once before their first mutation, and reuses that evidence unless a concrete invalidator occurs.
+- A future quota-consuming mutation may require a fresh check of that **exact** resource class; do not rerun unrelated closed gates.
+- Volatile runtime health such as RAM/disk/load/listeners may still be read fresh before a runtime mutation.
 
 ## Architecture invariants
 
