@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "start:qualification": "node oracle-qualification.js",
-    "test": "node --check index.js && node --check oracle-qualification.js && node --check lib/qualification-mode.js && node --check lib/qualification-source-hardening.js && node --check lib/competition-price-series.js && node --check lib/competition-analytics-phase1.js && bash -n scripts/oracle-e2-readonly-preflight.sh && bash -n scripts/oracle-e2-persistent-candidate-preflight.sh && bash -n scripts/oracle-qualification-launch.sh && bash -n scripts/oracle-e2-vault-preflight.sh && bash -n scripts/oracle-vault-secret-read-probe.sh && bash -n scripts/oracle-oci-cli-bootstrap.sh && node --test"
+    "start:production-readonly": "node oracle-production-readonly.js",
+    "test": "node --check index.js && node --check oracle-qualification.js && node --check oracle-production-readonly.js && node --check lib/qualification-mode.js && node --check lib/qualification-source-hardening.js && node --check lib/production-readonly-mode.js && node --check lib/production-readonly-source-hardening.js && node --check lib/competition-price-series.js && node --check lib/competition-analytics-phase1.js && bash -n scripts/oracle-e2-readonly-preflight.sh && bash -n scripts/oracle-e2-persistent-candidate-preflight.sh && bash -n scripts/oracle-qualification-launch.sh && bash -n scripts/oracle-production-readonly-launch.sh && bash -n scripts/oracle-production-readonly-materialize-vault.sh && bash -n scripts/oracle-production-readonly-cleanup-credentials.sh && bash -n scripts/oracle-e2-vault-preflight.sh && bash -n scripts/oracle-vault-secret-read-probe.sh && bash -n scripts/oracle-oci-cli-bootstrap.sh && node --test"
   },
   "dependencies": {
     "express": "^4.18.2",
