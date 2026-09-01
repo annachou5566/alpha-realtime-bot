@@ -22,10 +22,10 @@ This repository owns the Alpha Realtime Bot implementation and the current Rende
 6. `ORACLE_E2_MIGRATION_HANDOFF_2026-09-01.md`.
 7. `ORACLE_E2_MIGRATION_HEADROOM_LEDGER_2026-09-01.md`.
 8. `ORACLE_E2_MIGRATION_PHASE3_5_FINAL_PLAN_2026-09-01.md`.
-9. `MASTER_HANDOFF_PROMPT_ORACLE_E2_PHASE3_2026-09-01.md` when opening a new chat.
+9. `MASTER_HANDOFF_PROMPT_ORACLE_E2_PHASE3_FINAL_2026-09-01.md` when opening a new chat.
 10. Exact current PR metadata/head/runtime evidence.
 
-`ORACLE_E2_MIGRATION_PHASE3_5_PLAN_2026-09-01.md` is the earlier proposed plan and is superseded for execution by the reviewed FINAL plan above.
+`ORACLE_E2_MIGRATION_PHASE3_5_PLAN_2026-09-01.md` is the earlier proposed plan and is superseded for execution by the reviewed FINAL plan above. `MASTER_HANDOFF_PROMPT_ORACLE_E2_PHASE3_2026-09-01.md` is likewise superseded by the FINAL handoff prompt above.
 
 Never trust an old chat SHA, branch label, token, preview URL or runtime assumption over newer GitHub/runtime evidence.
 
