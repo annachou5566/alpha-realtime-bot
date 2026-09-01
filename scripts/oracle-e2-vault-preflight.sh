@@ -43,7 +43,9 @@ COMPARTMENT_ID="$(printf '%s\n' "$FIELDS" | sed -n 's/^compartmentId=//p')"
   printf 'IDENTITY_GATE=FAIL_INSTANCE_OCID\n'
   exit 68
 }
-[[ -n "$COMPARTMENT_ID" && "$COMPARTMENT_ID" == ocid1.compartment.* ]] || {
+# OCI uses the tenancy OCID itself for the root compartment. Accept either a
+# child-compartment OCID or the tenancy/root-compartment OCID; reject anything else.
+[[ -n "$COMPARTMENT_ID" && ( "$COMPARTMENT_ID" == ocid1.compartment.* || "$COMPARTMENT_ID" == ocid1.tenancy.* ) ]] || {
   printf 'IDENTITY_GATE=FAIL_COMPARTMENT_OCID\n'
   exit 69
 }
