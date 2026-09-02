@@ -6,7 +6,7 @@ const {
     structuralProjection,
     patchProjection,
     createCompetitionConfigRealtimeControl,
-} = require('./competition-config-realtime');
+} = require('../lib/competition-config-realtime');
 
 function makeSupabase() {
     let handler = null;

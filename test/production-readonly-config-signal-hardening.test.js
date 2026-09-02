@@ -13,6 +13,7 @@ const {
 } = require('../lib/production-readonly-source-hardening');
 
 const INDEX_PATH = path.join(__dirname, '..', 'index.js');
+const countMatches = (text, pattern) => (text.match(pattern) || []).length;
 
 test('Alpha config signal hardening applies exact anchors and stays separate from Spot', () => {
     const original = fs.readFileSync(INDEX_PATH, 'utf8');
@@ -32,10 +33,10 @@ test('Alpha config signal hardening applies exact anchors and stays separate fro
     assert.match(source, /X-Wave-Competition-Revision/);
     assert.match(source, /rememberRow: waveRememberCompetitionRow/);
 
-    // This feature belongs only to the Binance Alpha control/data plane.
-    // The transform must not introduce any Spot route dependency.
-    const introduced = source.replace(original, '');
-    assert.doesNotMatch(introduced, /spot-market|spot-tickers/);
+    // Spot exists elsewhere in the legacy runtime. Prove this transform does not
+    // add any new Spot route reference by comparing occurrence counts before/after.
+    assert.equal(countMatches(source, /spot-market/g), countMatches(original, /spot-market/g));
+    assert.equal(countMatches(source, /spot-tickers/g), countMatches(original, /spot-tickers/g));
 
     // The additive transform must remain compatible with the already-proven
     // production-readonly hardener rather than replacing its safety guards.
