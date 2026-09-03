@@ -6,10 +6,13 @@ const fs = require('fs');
 const path = require('path');
 const {
     createAlphaLivePublisher,
+    hmacHex,
     normalizePublishUrl,
 } = require('../lib/alpha-live-publisher');
 const {
+    VOLATILE_KEYS,
     createCompetitionConfigRealtimeControl,
+    structuralProjection,
 } = require('../lib/competition-config-realtime');
 const {
     hardenCompetitionConfigSignalSource,
@@ -54,10 +57,11 @@ test('publisher is disabled without exact canonical/preview Pages URL and strong
     assert.equal(calls, 0);
 });
 
-test('publisher sends bounded latest state, dedupes identical snapshots and never logs key', async () => {
+test('publisher sends schema v2 HMAC, stamps volume freshness, dedupes and never logs key', async () => {
     const calls = [];
     const logs = [];
     const key = 'k'.repeat(40);
+    const fixedNow = 1788432000123;
     let snapshot = {
         configSignal: { revision: 3, structuralRevision: 0, droppedBeforeRevision: 0, batches: [] },
         volume: {
@@ -71,9 +75,10 @@ test('publisher sends bounded latest state, dedupes identical snapshots and neve
         url: 'https://wave-alpha.pages.dev/api/alpha-live-publish',
         key,
         getSnapshot: () => snapshot,
+        now: () => fixedNow,
         logger: { warn: (...args) => logs.push(args.join(' ')) },
         fetchImpl: async (_url, init) => {
-            calls.push({ headers: init.headers, body: JSON.parse(init.body) });
+            calls.push({ headers: init.headers, bodyText: init.body, body: JSON.parse(init.body) });
             return { ok: true, status: 204 };
         },
     });
@@ -82,10 +87,16 @@ test('publisher sends bounded latest state, dedupes identical snapshots and neve
     await publisher.publishNow('first');
     await publisher.publishNow('duplicate');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].body.schema, 1);
-    assert.equal(calls[0].body.volume.revision, 8);
-    assert.equal(calls[0].body.volume.items.ALPHA_1.dailyTotal, 10);
-    assert.match(calls[0].headers.Authorization, /^Bearer /);
+    assert.equal(calls[0].body.schema, 2);
+    assert.equal(calls[0].body.publisherVersion, 'oracle-alpha-v2');
+    assert.equal(calls[0].body.volume.items.ALPHA_1.observedAt, 1000);
+    assert.equal(calls[0].body.volume.items.ALPHA_1.limitObservedAt, 900);
+    assert.equal(calls[0].headers['X-Wave-Alpha-Live-Timestamp'], String(fixedNow));
+    assert.equal(
+        calls[0].headers['X-Wave-Alpha-Live-Signature'],
+        `sha256=${hmacHex(key, `${fixedNow}.${calls[0].bodyText}`)}`,
+    );
+    assert.equal(Object.prototype.hasOwnProperty.call(calls[0].headers, 'Authorization'), false);
 
     snapshot = {
         ...snapshot,
@@ -99,15 +110,41 @@ test('publisher sends bounded latest state, dedupes identical snapshots and neve
     const telemetry = publisher.telemetry();
     assert.equal(telemetry.successes, 2);
     assert.equal(telemetry.duplicateSkips, 1);
+    assert.equal(telemetry.publisherVersion, 'oracle-alpha-v2');
 });
 
-test('config realtime notifies observer only after an applied patch batch', async () => {
+test('volume reconciliation keys are volatile and never look structural', () => {
+    for (const key of [
+        'limit_vol_history',
+        'onchain_vol_history',
+        'onchain_daily_volume',
+        'competition_chart_series_v3',
+        'last_updated_ts',
+        'limit_observed_at',
+        'reconciled_at',
+    ]) assert.equal(VOLATILE_KEYS.has(key), true, key);
+
+    const before = {
+        alphaId: 'ALPHA_7',
+        start: '2026-09-03',
+        history: [{ date: '2026-09-03', target: 10 }],
+        competition_chart_series_v3: { version: 3, updatedAt: 1 },
+    };
+    const after = {
+        ...before,
+        competition_chart_series_v3: { version: 3, updatedAt: 2 },
+        limit_vol_history: [{ date: '2026-09-03', value: 9 }],
+    };
+    assert.deepEqual(structuralProjection(after), structuralProjection(before));
+});
+
+test('config realtime notifies observer only after an applied patch batch including MinVol freshness', async () => {
     const supabase = makeSupabase();
     const row = {
         id: 7,
         name: 'AAA',
         contract: '0x7',
-        data: { alphaId: 'ALPHA_7', history: [{ date: '2026-09-03', target: 10 }] },
+        data: { alphaId: 'ALPHA_7', history: [{ date: '2026-09-03', target: 10 }], min_vol_updated_at: 1 },
     };
     let currentRaw = JSON.parse(JSON.stringify(row));
     const notifications = [];
@@ -127,7 +164,11 @@ test('config realtime notifies observer only after an applied patch batch', asyn
         eventType: 'UPDATE',
         new: {
             ...row,
-            data: { ...row.data, history: [{ date: '2026-09-03', target: 12 }] },
+            data: {
+                ...row.data,
+                history: [{ date: '2026-09-03', target: 12 }],
+                min_vol_updated_at: 2,
+            },
         },
     });
     control.flushPatches();
@@ -137,6 +178,7 @@ test('config realtime notifies observer only after an applied patch batch', asyn
     assert.equal(notifications[0].reason, 'patch');
     assert.equal(notifications[0].snapshot.revision, 1);
     assert.equal(notifications[0].snapshot.batches[0].patches[0].history[0].target, 12);
+    assert.equal(notifications[0].snapshot.batches[0].patches[0].minVolUpdatedAt, 2);
     await control.stop();
 });
 
