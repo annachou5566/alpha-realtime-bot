@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
     createAlphaLivePublisher,
+    canonicalMachineMessage,
     hmacHex,
     normalizePublishUrl,
 } = require('../lib/alpha-live-publisher');
@@ -57,7 +58,7 @@ test('publisher is disabled without exact canonical/preview Pages URL and strong
     assert.equal(calls, 0);
 });
 
-test('publisher sends schema v2 HMAC, stamps volume freshness, dedupes and never logs key', async () => {
+test('publisher sends schema v2 generic machine HMAC, stamps volume freshness, dedupes and never logs key', async () => {
     const calls = [];
     const logs = [];
     const key = 'k'.repeat(40);
@@ -91,11 +92,19 @@ test('publisher sends schema v2 HMAC, stamps volume freshness, dedupes and never
     assert.equal(calls[0].body.publisherVersion, 'oracle-alpha-v2');
     assert.equal(calls[0].body.volume.items.ALPHA_1.observedAt, 1000);
     assert.equal(calls[0].body.volume.items.ALPHA_1.limitObservedAt, 900);
-    assert.equal(calls[0].headers['X-Wave-Alpha-Live-Timestamp'], String(fixedNow));
+    assert.equal(calls[0].headers['x-wave-timestamp'], String(fixedNow));
+    const canonical = canonicalMachineMessage({
+        timestamp: fixedNow,
+        method: 'POST',
+        pathname: '/api/alpha-live-publish',
+        body: calls[0].bodyText,
+    });
     assert.equal(
-        calls[0].headers['X-Wave-Alpha-Live-Signature'],
-        `sha256=${hmacHex(key, `${fixedNow}.${calls[0].bodyText}`)}`,
+        calls[0].headers['x-wave-signature'],
+        `sha256=${hmacHex(key, canonical)}`,
     );
+    assert.equal(Object.prototype.hasOwnProperty.call(calls[0].headers, 'X-Wave-Alpha-Live-Timestamp'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(calls[0].headers, 'X-Wave-Alpha-Live-Signature'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(calls[0].headers, 'Authorization'), false);
 
     snapshot = {
