@@ -26,6 +26,7 @@ test('Alpha config signal hardening applies exact anchors and stays separate fro
         'config-realtime-telemetry',
         'alpha-market-config-signal',
         'competition-revision-headers',
+        'alpha-live-volume-publish',
         'config-realtime-startup',
     ]);
     assert.match(source, /COMPETITION_CONFIG_ROW_BASELINES/);
