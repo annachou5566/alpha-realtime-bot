@@ -288,6 +288,7 @@ let PRICE_SERIES_LAST_HASH = '';
 let PRICE_SERIES_LAST_UPDATED_AT = 0;
 let PRICE_SERIES_SYNC_RUNNING = false;
 let PRICE_SERIES_CONFIG_CURSOR = 0;
+const PRICE_SERIES_BOUNDARY_CURSOR = new Map();
 const PRICE_SERIES_KEY = 'competition-price-series.json';
 let LIMIT_MAP_CACHE = { ts: 0, volume: Object.create(null), tx: Object.create(null) };
 
@@ -706,12 +707,19 @@ async function syncTournamentPriceSeries(options = {}) {
             ));
 
             missing += missingBoundaries.length;
-            if (dryRun || !missingBoundaries.length) continue;
+            if (!missingBoundaries.length) {
+                PRICE_SERIES_BOUNDARY_CURSOR.delete(id);
+                continue;
+            }
+            if (dryRun) continue;
 
             // Fairness rule: one network attempt per competition per sync pass.
-            // A bad/missing boundary can no longer consume the whole global fetch budget.
+            // Rotate inside each competition too, so one unavailable exact boundary
+            // cannot block every later boundary for that same tournament.
+            const boundaryCursor = PRICE_SERIES_BOUNDARY_CURSOR.get(id) || 0;
+            const boundary = missingBoundaries[boundaryCursor % missingBoundaries.length];
+            PRICE_SERIES_BOUNDARY_CURSOR.set(id, boundaryCursor + 1);
             fetched += 1;
-            const boundary = missingBoundaries[0];
             const pricePoint = await fetchBoundaryPrice(config, boundary.boundaryAt);
             if (
                 !pricePoint
