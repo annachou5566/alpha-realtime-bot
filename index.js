@@ -16,6 +16,9 @@ const {
     reconcileBoundaryPoints,
     stableJsonHash,
 } = require('./lib/competition-price-series');
+const {
+    createCompetitionPriceSeriesPublisher,
+} = require('./lib/competition-price-series-publisher');
 
 const http = require('http');
 const WebSocket = require('ws'); // dùng cho Spot Ticker stream từ Binance
@@ -158,6 +161,11 @@ const s3Client = new S3Client({
     }
 });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+const PRICE_SERIES_MACHINE_PUBLISHER = createCompetitionPriceSeriesPublisher({
+    livePublishUrl: process.env.ALPHA_LIVE_PUBLISH_URL,
+    key: process.env.ALPHA_LIVE_PUBLISH_KEY,
+    logger: console,
+});
 
 const originalS3Send = s3Client.send.bind(s3Client);
 s3Client.send = async command => {
@@ -531,6 +539,18 @@ async function ensurePriceSeriesBackup() {
 async function persistPriceSeriesToR2() {
     const nextHash = stableJsonHash(PRICE_SERIES_CACHE);
     if (nextHash === PRICE_SERIES_LAST_HASH) return false;
+
+    const readonlyState = globalThis.__WAVE_PRODUCTION_READONLY_STATE;
+    if (readonlyState && readonlyState.mode === 'production-readonly') {
+        if (!PRICE_SERIES_MACHINE_PUBLISHER.enabled) {
+            throw new Error('Competition Price machine publisher unavailable in production-readonly mode');
+        }
+        await PRICE_SERIES_MACHINE_PUBLISHER.publishSnapshot(PRICE_SERIES_CACHE);
+        PRICE_SERIES_LAST_HASH = nextHash;
+        PRICE_SERIES_LAST_UPDATED_AT = Date.now();
+        return true;
+    }
+
     await ensurePriceSeriesBackup();
     const body = JSON.stringify(PRICE_SERIES_CACHE);
     await s3Client.send(new PutObjectCommand({
@@ -650,7 +670,14 @@ async function syncTournamentPriceSeries(options = {}) {
             };
             if (stableJsonHash(previous) !== stableJsonHash(existing)) migrated += 1;
             if (!dryRun) PRICE_SERIES_CACHE[id] = existing;
-            const knownBoundaries = new Set(existing.points.map(point => Number(point.boundaryAt)));
+            const knownBoundaries = new Set(existing.points
+                .filter(point => (
+                    point
+                    && point.quality === 'exact'
+                    && Number(point.driftMs) === 0
+                    && Number(point.observedAt) === Number(point.boundaryAt)
+                ))
+                .map(point => Number(point.boundaryAt)));
             const missingBoundaries = boundaries.filter(boundary => (
                 !knownBoundaries.has(boundary.boundaryAt)
                 && boundary.boundaryAt <= now - 15_000
@@ -664,8 +691,16 @@ async function syncTournamentPriceSeries(options = {}) {
             fetched += 1;
             const boundary = missingBoundaries[0];
             const pricePoint = await fetchBoundaryPrice(config, boundary.boundaryAt);
-            if (!pricePoint) continue;
+            if (
+                !pricePoint
+                || pricePoint.quality !== 'exact'
+                || Number(pricePoint.driftMs) !== 0
+                || Number(pricePoint.observedAt) !== Number(boundary.boundaryAt)
+            ) continue;
 
+            existing.points = existing.points.filter(
+                point => Number(point && point.boundaryAt) !== Number(boundary.boundaryAt)
+            );
             existing.points.push({
                 slot: boundary.slot,
                 boundaryAt: boundary.boundaryAt,
