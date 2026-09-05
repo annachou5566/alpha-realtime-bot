@@ -51,7 +51,9 @@ test('production-readonly persists Price through existing machine HMAC path, nev
     assert.match(source, /createCompetitionPriceSeriesPublisher/);
     assert.match(source, /readonlyState && readonlyState\.mode === 'production-readonly'/);
     assert.match(source, /PRICE_SERIES_MACHINE_PUBLISHER\.publishSnapshot\(/);
-    assert.match(source, /scopeIds\.length \? \{ scopeIds \} : \{\}/);
+    assert.match(source, /production-readonly persistence requires scoped ids/);
+    assert.match(source, /for \(let offset = 0; offset < scopeIds\.length; offset \+= 32\)/);
+    assert.match(source, /scopeIds\.slice\(offset, offset \+ 32\)/);
     const persist = sliceBetween('async function persistPriceSeriesToR2', 'function normalizeContractForChain');
     const readonlyStart = persist.indexOf("if (readonlyState && readonlyState.mode === 'production-readonly')");
     const directPut = persist.indexOf('new PutObjectCommand');
@@ -102,10 +104,14 @@ test('one unavailable boundary cannot starve later boundaries in the same tourna
 });
 
 
-test('production Price persistence scopes machine merge to changed ids only', () => {
+test('production Price persistence scopes all changed ids without silent truncation', () => {
     const persist = sliceBetween('async function persistPriceSeriesToR2', 'function normalizeContractForChain');
-    assert.match(persist, /const scopeIds = normalizePriceSeriesIds\(options\.scopeIds\)/);
-    assert.match(persist, /PRICE_SERIES_MACHINE_PUBLISHER\.publishSnapshot\([\s\S]*scopeIds\.length \? \{ scopeIds \} : \{\}/);
+    assert.match(persist, /const hasScope = Object\.prototype\.hasOwnProperty\.call\(options, 'scopeIds'\)/);
+    assert.match(persist, /normalizePricePersistenceScopeIds\(options\.scopeIds\)/);
+    assert.match(persist, /production-readonly persistence requires scoped ids/);
+    assert.match(persist, /for \(let offset = 0; offset < scopeIds\.length; offset \+= 32\)/);
+    assert.match(persist, /scopeIds\.slice\(offset, offset \+ 32\)/);
+    assert.doesNotMatch(persist, /scopeIds\.length \? \{ scopeIds \} : \{\}/);
 
     const sync = sliceBetween('async function syncTournamentPriceSeries', "app.get('/api/competition-price-series'");
     assert.match(sync, /const changedIds = new Set\(\)/);
