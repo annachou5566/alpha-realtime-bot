@@ -592,9 +592,16 @@ async function fetchBoundaryPrice(config, boundaryAt) {
         try {
             const response = await axios.get(url, { headers: FAKE_HEADERS, timeout: 10_000 });
             const selected = chooseBoundaryPrice(response.data, boundaryAt, attempt.maxDriftMs);
-            if (selected) {
+            if (
+                selected
+                && selected.quality === 'exact'
+                && Number(selected.driftMs) === 0
+                && Number(selected.observedAt) === Number(boundaryAt)
+            ) {
                 return { ...selected, source: 'binance-alpha', resolution: attempt.interval };
             }
+            // A nearest candle is not canonical. Continue to the next resolution
+            // instead of returning early and starving an exact fallback.
         } catch (_) { /* try lower-resolution fallback */ }
     }
     return null;
@@ -602,6 +609,16 @@ async function fetchBoundaryPrice(config, boundaryAt) {
 
 function tournamentSeriesId(config) {
     return String(config && (config.db_id || config.id || config.alphaId || config.symbol) || '');
+}
+
+function normalizePriceSeriesIds(value) {
+    const values = Array.isArray(value)
+        ? value
+        : (typeof value === 'string' ? value.split(',') : []);
+    return Array.from(new Set(values
+        .map(item => String(item || '').trim())
+        .filter(item => /^\d{1,9}$/.test(item))))
+        .slice(0, 32);
 }
 
 function embeddedCompetitionPriceSeries(config) {
@@ -621,6 +638,9 @@ async function syncTournamentPriceSeries(options = {}) {
     const includeHistory = options.includeHistory === true;
     const maxFetches = Math.min(100, Math.max(1, Number(options.maxFetches) || 4));
     const dryRun = options.dryRun === true;
+    const hasIdFilter = Array.isArray(options.ids) || typeof options.ids === 'string';
+    const requestedIds = normalizePriceSeriesIds(options.ids);
+    const requestedIdSet = new Set(requestedIds);
     const now = Date.now();
     let fetched = 0;
     let stored = 0;
@@ -631,7 +651,9 @@ async function syncTournamentPriceSeries(options = {}) {
         const configs = [
             ...Object.values(ACTIVE_CONFIG),
             ...(includeHistory ? Object.values(HISTORY_CACHE) : []),
-        ].sort((a, b) => tournamentSeriesId(a).localeCompare(
+        ].filter(config => (
+            !hasIdFilter || requestedIdSet.has(tournamentSeriesId(config))
+        )).sort((a, b) => tournamentSeriesId(a).localeCompare(
             tournamentSeriesId(b),
             undefined,
             { numeric: true },
@@ -726,7 +748,15 @@ async function syncTournamentPriceSeries(options = {}) {
             PRICE_SERIES_CONFIG_CURSOR = (startCursor + Math.max(1, visitedConfigs)) % configCount;
         }
         if (!dryRun && (stored > 0 || migrated > 0)) await persistPriceSeriesToR2();
-        return { skipped: false, fetched, stored, migrated, missing, series: Object.keys(PRICE_SERIES_CACHE).length };
+        return {
+            skipped: false,
+            fetched,
+            stored,
+            migrated,
+            missing,
+            series: Object.keys(PRICE_SERIES_CACHE).length,
+            requestedIds: hasIdFilter ? requestedIds : null,
+        };
     } finally {
         PRICE_SERIES_SYNC_RUNNING = false;
     }
@@ -744,10 +774,17 @@ app.get('/api/competition-price-series', (req, res) => {
 app.post('/api/admin/backfill-competition-prices', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const hasIds = Object.prototype.hasOwnProperty.call(body, 'ids');
+        const ids = normalizePriceSeriesIds(body.ids);
+        if (hasIds && !ids.length) {
+            return res.status(400).json({ error: 'At least one valid numeric tournament id is required' });
+        }
         const result = await syncTournamentPriceSeries({
-            includeHistory: req.body && req.body.includeHistory !== false,
-            maxFetches: req.body && req.body.maxFetches,
-            dryRun: req.body && req.body.dryRun === true,
+            includeHistory: body.includeHistory !== false,
+            maxFetches: body.maxFetches,
+            dryRun: body.dryRun === true,
+            ids: hasIds ? ids : undefined,
         });
         res.json(result);
     } catch (error) {
