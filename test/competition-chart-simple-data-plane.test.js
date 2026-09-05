@@ -42,3 +42,23 @@ test('normal runtime does not silently enable historical backfill or add another
     const admin = sliceBetween("app.post('/api/admin/backfill-competition-prices'", 'async function syncActiveConfig');
     assert.match(admin, /includeHistory: req\.body && req\.body\.includeHistory !== false/);
 });
+
+
+test('production-readonly persists Price through existing machine HMAC path, never direct R2 PutObject', () => {
+    assert.match(source, /createCompetitionPriceSeriesPublisher/);
+    assert.match(source, /readonlyState && readonlyState\.mode === 'production-readonly'/);
+    assert.match(source, /PRICE_SERIES_MACHINE_PUBLISHER\.publishSnapshot\(PRICE_SERIES_CACHE\)/);
+    const persist = sliceBetween('async function persistPriceSeriesToR2', 'function normalizeContractForChain');
+    const readonlyStart = persist.indexOf("if (readonlyState && readonlyState.mode === 'production-readonly')");
+    const directPut = persist.indexOf('new PutObjectCommand');
+    assert.ok(readonlyStart >= 0 && directPut > readonlyStart);
+});
+
+test('nearest Price never closes a canonical boundary', () => {
+    const sync = sliceBetween('async function syncTournamentPriceSeries', "app.get('/api/competition-price-series'");
+    assert.match(sync, /point\.quality === 'exact'/);
+    assert.match(sync, /Number\(point\.driftMs\) === 0/);
+    assert.match(sync, /pricePoint\.quality !== 'exact'/);
+    assert.match(sync, /Number\(pricePoint\.observedAt\) !== Number\(boundary\.boundaryAt\)/);
+    assert.match(sync, /existing\.points = existing\.points\.filter/);
+});
