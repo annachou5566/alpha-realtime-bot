@@ -716,9 +716,11 @@ async function syncTournamentPriceSeries(options = {}) {
             // Fairness rule: one network attempt per competition per sync pass.
             // Rotate inside each competition too, so one unavailable exact boundary
             // cannot block every later boundary for that same tournament.
-            const boundaryCursor = PRICE_SERIES_BOUNDARY_CURSOR.get(id) || 0;
-            const boundary = missingBoundaries[boundaryCursor % missingBoundaries.length];
-            PRICE_SERIES_BOUNDARY_CURSOR.set(id, boundaryCursor + 1);
+            const lastAttemptedBoundaryAt = Number(PRICE_SERIES_BOUNDARY_CURSOR.get(id) || 0);
+            const boundary = missingBoundaries.find(candidate => (
+                Number(candidate.boundaryAt) > lastAttemptedBoundaryAt
+            )) || missingBoundaries[0];
+            PRICE_SERIES_BOUNDARY_CURSOR.set(id, Number(boundary.boundaryAt));
             fetched += 1;
             const pricePoint = await fetchBoundaryPrice(config, boundary.boundaryAt);
             if (
