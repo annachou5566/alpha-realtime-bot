@@ -19,7 +19,7 @@ test('production-readonly source hardening applies every safety anchor exactly o
         'mode-loopback-and-state',
         'historical-refresh-guard',
         'start-offset-guard',
-        'price-persistence-guard',
+        'price-machine-persistence-guard',
         'finalize-guard',
         'competition-live-write-guard',
         'inline-auto-finalize-guard',
@@ -33,19 +33,51 @@ test('production-readonly source hardening applies every safety anchor exactly o
     assert.match(source, /const LISTEN_HOST = PRODUCTION_READONLY_MODE \? '127\.0\.0\.1' : undefined;/);
     assert.match(source, /Historical Binance refresh disabled/);
     assert.match(source, /Start-offset upstream scan disabled/);
-    assert.match(source, /Competition price persistence disabled/);
-    assert.match(source, /maxFetches: Math\.min\(2,/);
+    assert.match(source, /WAVE_COMPETITION_PRICE_REPAIR_WINDOW/);
+    assert.match(source, /181-188-2026-09-05/);
+    assert.match(source, /productionPriceRepairScopeAllowed/);
+    assert.match(source, /Historical Competition Price repair unavailable outside approved window/);
+    assert.match(source, /maxFetches: Math\.min\(6,/);
+    assert.doesNotMatch(source, /Competition price persistence disabled/);
     assert.match(source, /Finalize suppressed/);
     assert.match(source, /competition-live-write/);
     assert.match(source, /const isNowFinalized = !PRODUCTION_READONLY_MODE &&/);
     assert.match(source, /tick-cache-flush/);
     assert.match(source, /Mutation unavailable in production-readonly mode/);
+    assert.match(source, /body\.includeHistory === true/);
+    assert.match(source, /body\.dryRun === false/);
+    assert.match(source, /ids\.length === body\.ids\.length/);
+    assert.match(source, /productionPriceRepairScopeAllowed\(ids, body\.maxFetches\)/);
     assert.match(source, /writeSafety:/);
     assert.match(source, /server\.listen\(PORT, LISTEN_HOST, async \(\) => \{/);
 
     // Source hardening is a first-class checked-in runtime entrypoint but does not
     // rewrite the shared Render authority file in place.
     assert.equal(fs.readFileSync(INDEX_PATH, 'utf8'), original);
+});
+
+test('production-readonly Competition Price keeps normal scoped persistence but repair stays fail-closed by default', () => {
+    const original = fs.readFileSync(INDEX_PATH, 'utf8');
+    const { source } = hardenProductionReadonlySource(original);
+
+    const syncStart = source.indexOf('async function syncTournamentPriceSeries(options = {}) {');
+    const syncEnd = source.indexOf("app.get('/api/competition-price-series'", syncStart);
+    assert.ok(syncStart >= 0 && syncEnd > syncStart);
+    const sync = source.slice(syncStart, syncEnd);
+
+    assert.match(sync, /options\.includeHistory === true && !repairAllowed/);
+    assert.match(sync, /includeHistory: false/);
+    assert.match(sync, /maxFetches: Math\.min\(6,/);
+    assert.doesNotMatch(sync, /options\.dryRun !== true[\s\S]*reason: 'production-readonly'[\s\S]*return/);
+
+    const routeStart = source.indexOf("app.post('/api/admin/backfill-competition-prices'");
+    const routeEnd = source.indexOf('async function syncActiveConfig', routeStart);
+    assert.ok(routeStart >= 0 && routeEnd > routeStart);
+    const route = source.slice(routeStart, routeEnd);
+
+    assert.match(route, /if \(PRODUCTION_READONLY_MODE\)/);
+    assert.match(route, /return res\.status\(503\)/);
+    assert.match(route, /productionPriceRepairScopeAllowed\(ids, body\.maxFetches\)/);
 });
 
 test('writer inventory is pinned so a new index mutation path reopens Phase 4A review', () => {
