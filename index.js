@@ -537,16 +537,20 @@ async function ensurePriceSeriesBackup() {
     return PRICE_SERIES_BACKUP_STATE;
 }
 
-async function persistPriceSeriesToR2() {
+async function persistPriceSeriesToR2(options = {}) {
     const nextHash = stableJsonHash(PRICE_SERIES_CACHE);
     if (nextHash === PRICE_SERIES_LAST_HASH) return false;
 
+    const scopeIds = normalizePriceSeriesIds(options.scopeIds);
     const readonlyState = globalThis.__WAVE_PRODUCTION_READONLY_STATE;
     if (readonlyState && readonlyState.mode === 'production-readonly') {
         if (!PRICE_SERIES_MACHINE_PUBLISHER.enabled) {
             throw new Error('Competition Price machine publisher unavailable in production-readonly mode');
         }
-        await PRICE_SERIES_MACHINE_PUBLISHER.publishSnapshot(PRICE_SERIES_CACHE);
+        await PRICE_SERIES_MACHINE_PUBLISHER.publishSnapshot(
+            PRICE_SERIES_CACHE,
+            scopeIds.length ? { scopeIds } : {},
+        );
         PRICE_SERIES_LAST_HASH = nextHash;
         PRICE_SERIES_LAST_UPDATED_AT = Date.now();
         return true;
