@@ -68,7 +68,10 @@ test('production-readonly Competition Price keeps normal scoped persistence but 
     assert.match(sync, /options\.includeHistory === true && !repairAllowed/);
     assert.match(sync, /includeHistory: false/);
     assert.match(sync, /maxFetches: Math\.min\(6,/);
-    assert.doesNotMatch(sync, /options\.dryRun !== true[\s\S]*reason: 'production-readonly'[\s\S]*return/);
+    assert.doesNotMatch(
+        sync,
+        /if \(options\.dryRun !== true\) \{[\s\S]*reason: 'production-readonly'/,
+    );
 
     const routeStart = source.indexOf("app.post('/api/admin/backfill-competition-prices'");
     const routeEnd = source.indexOf('async function syncActiveConfig', routeStart);
