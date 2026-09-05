@@ -651,6 +651,7 @@ async function syncTournamentPriceSeries(options = {}) {
     let stored = 0;
     let missing = 0;
     let migrated = 0;
+    const changedIds = new Set();
 
     try {
         const configs = [
@@ -695,7 +696,10 @@ async function syncTournamentPriceSeries(options = {}) {
                 },
                 points: reconcileBoundaryPoints(previous.points, boundaries),
             };
-            if (stableJsonHash(previous) !== stableJsonHash(existing)) migrated += 1;
+            if (stableJsonHash(previous) !== stableJsonHash(existing)) {
+                migrated += 1;
+                if (!dryRun) changedIds.add(id);
+            }
             if (!dryRun) PRICE_SERIES_CACHE[id] = existing;
             const knownBoundaries = new Set(existing.points
                 .filter(point => (
