@@ -31,9 +31,10 @@ test('price sync is fair: at most one missing boundary attempt per competition p
     assert.match(sync, /let PRICE_SERIES_CONFIG_CURSOR|PRICE_SERIES_CONFIG_CURSOR/);
     assert.match(sync, /const orderedConfigs = configCount/);
     assert.match(sync, /const missingBoundaries = boundaries\.filter/);
-    assert.match(sync, /const boundaryCursor = PRICE_SERIES_BOUNDARY_CURSOR\.get\(id\) \|\| 0/);
-    assert.match(sync, /const boundary = missingBoundaries\[boundaryCursor % missingBoundaries\.length\]/);
-    assert.match(sync, /PRICE_SERIES_BOUNDARY_CURSOR\.set\(id, boundaryCursor \+ 1\)/);
+    assert.match(sync, /const lastAttemptedBoundaryAt = Number\(PRICE_SERIES_BOUNDARY_CURSOR\.get\(id\) \|\| 0\)/);
+    assert.match(sync, /missingBoundaries\.find\(candidate => \([\s\S]*Number\(candidate\.boundaryAt\) > lastAttemptedBoundaryAt/);
+    assert.match(sync, /\)\) \|\| missingBoundaries\[0\]/);
+    assert.match(sync, /PRICE_SERIES_BOUNDARY_CURSOR\.set\(id, Number\(boundary\.boundaryAt\)\)/);
     assert.match(sync, /fetched \+= 1;\s*const pricePoint = await fetchBoundaryPrice/s);
     assert.doesNotMatch(sync, /for \(const boundary of boundaries\) \{[\s\S]*fetchBoundaryPrice/);
 });
@@ -95,5 +96,6 @@ test('one unavailable boundary cannot starve later boundaries in the same tourna
     const sync = sliceBetween('async function syncTournamentPriceSeries', "app.get('/api/competition-price-series'");
     assert.match(source, /const PRICE_SERIES_BOUNDARY_CURSOR = new Map\(\)/);
     assert.match(sync, /PRICE_SERIES_BOUNDARY_CURSOR\.delete\(id\)/);
-    assert.match(sync, /boundaryCursor % missingBoundaries\.length/);
+    assert.match(sync, /Number\(candidate\.boundaryAt\) > lastAttemptedBoundaryAt/);
+    assert.match(sync, /\|\| missingBoundaries\[0\]/);
 });
