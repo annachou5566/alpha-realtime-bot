@@ -279,6 +279,7 @@ let PRICE_SERIES_CACHE = {};
 let PRICE_SERIES_LAST_HASH = '';
 let PRICE_SERIES_LAST_UPDATED_AT = 0;
 let PRICE_SERIES_SYNC_RUNNING = false;
+let PRICE_SERIES_CONFIG_CURSOR = 0;
 const PRICE_SERIES_KEY = 'competition-price-series.json';
 let LIMIT_MAP_CACHE = { ts: 0, volume: Object.create(null), tx: Object.create(null) };
 
@@ -583,6 +584,17 @@ function tournamentSeriesId(config) {
     return String(config && (config.db_id || config.id || config.alphaId || config.symbol) || '');
 }
 
+function embeddedCompetitionPriceSeries(config) {
+    const id = tournamentSeriesId(config);
+    return id ? (PRICE_SERIES_CACHE[id] || null) : null;
+}
+
+function attachCompetitionPriceSeries(config) {
+    if (!config || typeof config !== 'object') return config;
+    const series = embeddedCompetitionPriceSeries(config);
+    return series ? { ...config, competition_price_series_v3: series } : config;
+}
+
 async function syncTournamentPriceSeries(options = {}) {
     if (PRICE_SERIES_SYNC_RUNNING) return { skipped: true, reason: 'already-running' };
     PRICE_SERIES_SYNC_RUNNING = true;
@@ -599,8 +611,20 @@ async function syncTournamentPriceSeries(options = {}) {
         const configs = [
             ...Object.values(ACTIVE_CONFIG),
             ...(includeHistory ? Object.values(HISTORY_CACHE) : []),
-        ];
-        for (const config of configs) {
+        ].sort((a, b) => tournamentSeriesId(a).localeCompare(
+            tournamentSeriesId(b),
+            undefined,
+            { numeric: true },
+        ));
+        const configCount = configs.length;
+        const startCursor = configCount ? PRICE_SERIES_CONFIG_CURSOR % configCount : 0;
+        const orderedConfigs = configCount
+            ? [...configs.slice(startCursor), ...configs.slice(0, startCursor)]
+            : [];
+        let visitedConfigs = 0;
+
+        for (const config of orderedConfigs) {
+            visitedConfigs += 1;
             if (fetched >= maxFetches) break;
             const id = tournamentSeriesId(config);
             if (!id || !config.contract) continue;
@@ -627,35 +651,44 @@ async function syncTournamentPriceSeries(options = {}) {
             if (stableJsonHash(previous) !== stableJsonHash(existing)) migrated += 1;
             if (!dryRun) PRICE_SERIES_CACHE[id] = existing;
             const knownBoundaries = new Set(existing.points.map(point => Number(point.boundaryAt)));
+            const missingBoundaries = boundaries.filter(boundary => (
+                !knownBoundaries.has(boundary.boundaryAt)
+                && boundary.boundaryAt <= now - 15_000
+            ));
 
-            for (const boundary of boundaries) {
-                if (fetched >= maxFetches) break;
-                if (knownBoundaries.has(boundary.boundaryAt) || boundary.boundaryAt > now - 15_000) continue;
-                missing += 1;
-                if (dryRun) continue;
-                fetched += 1;
-                const pricePoint = await fetchBoundaryPrice(config, boundary.boundaryAt);
-                if (!pricePoint) continue;
-                existing.points.push({
-                    slot: boundary.slot,
-                    boundaryAt: boundary.boundaryAt,
-                    date: boundary.date,
-                    kind: boundary.kind,
-                    owners: boundary.owners,
-                    kinds: boundary.kinds,
-                    indices: boundary.indices,
-                    observedAt: pricePoint.observedAt,
-                    price: pricePoint.price,
-                    quality: pricePoint.quality,
-                    driftMs: pricePoint.driftMs,
-                    source: pricePoint.source,
-                    resolution: pricePoint.resolution,
-                });
-                existing.points.sort((a, b) => Number(a.boundaryAt) - Number(b.boundaryAt));
-                knownBoundaries.add(boundary.boundaryAt);
-                PRICE_SERIES_CACHE[id] = existing;
-                stored += 1;
-            }
+            missing += missingBoundaries.length;
+            if (dryRun || !missingBoundaries.length) continue;
+
+            // Fairness rule: one network attempt per competition per sync pass.
+            // A bad/missing boundary can no longer consume the whole global fetch budget.
+            fetched += 1;
+            const boundary = missingBoundaries[0];
+            const pricePoint = await fetchBoundaryPrice(config, boundary.boundaryAt);
+            if (!pricePoint) continue;
+
+            existing.points.push({
+                slot: boundary.slot,
+                boundaryAt: boundary.boundaryAt,
+                date: boundary.date,
+                kind: boundary.kind,
+                owners: boundary.owners,
+                kinds: boundary.kinds,
+                indices: boundary.indices,
+                observedAt: pricePoint.observedAt,
+                price: pricePoint.price,
+                quality: pricePoint.quality,
+                driftMs: pricePoint.driftMs,
+                source: pricePoint.source,
+                resolution: pricePoint.resolution,
+            });
+            existing.points.sort((a, b) => Number(a.boundaryAt) - Number(b.boundaryAt));
+            knownBoundaries.add(boundary.boundaryAt);
+            PRICE_SERIES_CACHE[id] = existing;
+            stored += 1;
+        }
+
+        if (!dryRun && configCount) {
+            PRICE_SERIES_CONFIG_CURSOR = (startCursor + Math.max(1, visitedConfigs)) % configCount;
         }
         if (!dryRun && (stored > 0 || migrated > 0)) await persistPriceSeriesToR2();
         return { skipped: false, fetched, stored, migrated, missing, series: Object.keys(PRICE_SERIES_CACHE).length };
@@ -1379,7 +1412,11 @@ app.get('/api/competition-data', (req, res) => {
     
     const responseData = {};
     const nowStr = new Date().toISOString().split('T')[0];
-    if (scope !== 'running') Object.assign(responseData, HISTORY_CACHE);
+    if (scope !== 'running') {
+        Object.entries(HISTORY_CACHE).forEach(([key, item]) => {
+            responseData[key] = attachCompetitionPriceSeries(item);
+        });
+    }
     if (scope === 'history') return res.json(responseData);
 
     Object.keys(ACTIVE_CONFIG).forEach(alphaId => {
@@ -1411,7 +1448,8 @@ app.get('/api/competition-data', (req, res) => {
             base_limit_vol: base.base_limit_vol || 0,
             real_vol_history: historyArr,
             market_analysis: real.analysis || { label: "WAIT..." },
-            ai_prediction: aiResult
+            ai_prediction: aiResult,
+            competition_price_series_v3: embeddedCompetitionPriceSeries(config),
         };
     });
 
