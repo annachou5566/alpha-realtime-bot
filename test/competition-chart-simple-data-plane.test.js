@@ -62,3 +62,28 @@ test('nearest Price never closes a canonical boundary', () => {
     assert.match(sync, /Number\(pricePoint\.observedAt\) !== Number\(boundary\.boundaryAt\)/);
     assert.match(sync, /existing\.points = existing\.points\.filter/);
 });
+
+
+test('bounded historical backfill scopes strictly to requested numeric tournament ids', () => {
+    assert.match(source, /function normalizePriceSeriesIds\(value\)/);
+    assert.match(source, /filter\(item => \/\^\\d\{1,9\}\$\/\.test\(item\)\)/);
+    const sync = sliceBetween('async function syncTournamentPriceSeries', "app.get('/api/competition-price-series'");
+    assert.match(sync, /const hasIdFilter = Array\.isArray\(options\.ids\) \|\| typeof options\.ids === 'string'/);
+    assert.match(sync, /const requestedIdSet = new Set\(requestedIds\)/);
+    assert.match(sync, /!hasIdFilter \|\| requestedIdSet\.has\(tournamentSeriesId\(config\)\)/);
+    assert.match(sync, /requestedIds: hasIdFilter \? requestedIds : null/);
+
+    const admin = sliceBetween("app.post('/api/admin/backfill-competition-prices'", 'async function syncActiveConfig');
+    assert.match(admin, /const hasIds = Object\.prototype\.hasOwnProperty\.call\(body, 'ids'\)/);
+    assert.match(admin, /return res\.status\(400\)\.json\(\{ error: 'At least one valid numeric tournament id is required' \}\)/);
+    assert.match(admin, /ids: hasIds \? ids : undefined/);
+});
+
+test('boundary fetch continues past nearest and returns exact timestamps only', () => {
+    const fetchBlock = sliceBetween('async function fetchBoundaryPrice', 'function tournamentSeriesId');
+    assert.match(fetchBlock, /selected\.quality === 'exact'/);
+    assert.match(fetchBlock, /Number\(selected\.driftMs\) === 0/);
+    assert.match(fetchBlock, /Number\(selected\.observedAt\) === Number\(boundaryAt\)/);
+    assert.match(fetchBlock, /Continue to the next resolution/);
+    assert.doesNotMatch(fetchBlock, /if \(selected\) \{\s*return/);
+});
