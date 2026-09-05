@@ -50,10 +50,14 @@ function nearest(boundaryAt, observedAt, price) {
     };
 }
 
-test('scope ids are numeric, unique, ordered by request, and bounded', () => {
-    assert.deepEqual(normalizeScopeIds(['181','182','181','bad','']), ['181','182']);
+test('scope ids are numeric, unique, ordered by request, and fail closed over the bound', () => {
+    assert.deepEqual(normalizeScopeIds(['181','182','181']), ['181','182']);
     assert.deepEqual(normalizeScopeIds(null), []);
-    assert.equal(normalizeScopeIds(Array.from({length:40}, (_,i)=>String(i+1))).length, 32);
+    assert.throws(() => normalizeScopeIds(['181','bad']), /must be numeric/);
+    assert.throws(
+        () => normalizeScopeIds(Array.from({length:33}, (_,i)=>String(i+1))),
+        /exceeds 32 ids/,
+    );
 });
 
 test('exactSnapshot with scope excludes every unrelated series and nearest point', () => {
@@ -68,6 +72,14 @@ test('exactSnapshot with scope excludes every unrelated series and nearest point
     assert.equal(scoped['181'].points[0].quality, 'exact');
     assert.equal(scoped['182'].points.length, 1);
     assert.equal(Object.prototype.hasOwnProperty.call(scoped, '5'), false);
+});
+
+test('explicit empty scope never falls back to a whole snapshot', () => {
+    const cache = {
+        '5': series(5, [exact(1000, 1)]),
+        '181': series(181, [exact(1000, 2)]),
+    };
+    assert.deepEqual(exactSnapshot(cache, []), {});
 });
 
 test('scoped publisher sends merge envelope containing only scope ids', async () => {
@@ -109,4 +121,24 @@ test('scoped publisher fails closed if requested series is absent', async () => 
         publisher.publishSnapshot({ '181': series(181, [exact(1000, 2)]) }, { scopeIds: ['181','182'] }),
         /missing requested series/,
     );
+});
+
+test('scoped publisher never truncates or downgrades an invalid scope into replace mode', async () => {
+    let requests = 0;
+    const publisher = createCompetitionPriceSeriesPublisher({
+        livePublishUrl: 'https://wave-alpha.pages.dev/api/alpha-live-publish',
+        key: 'k'.repeat(32),
+        fetchImpl: async () => {
+            requests += 1;
+            return { ok: true, status: 204 };
+        },
+        logger: { warn() {} },
+    });
+    const cache = { '181': series(181, [exact(1000, 2)]) };
+    await assert.rejects(publisher.publishSnapshot(cache, { scopeIds: [] }), /requires at least one id/);
+    await assert.rejects(
+        publisher.publishSnapshot(cache, { scopeIds: Array.from({length:33}, (_,i)=>String(i+1)) }),
+        /exceeds 32 ids/,
+    );
+    assert.equal(requests, 0);
 });
