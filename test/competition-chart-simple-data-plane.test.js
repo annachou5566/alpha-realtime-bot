@@ -50,7 +50,8 @@ test('normal runtime does not silently enable historical backfill or add another
 test('production-readonly persists Price through existing machine HMAC path, never direct R2 PutObject', () => {
     assert.match(source, /createCompetitionPriceSeriesPublisher/);
     assert.match(source, /readonlyState && readonlyState\.mode === 'production-readonly'/);
-    assert.match(source, /PRICE_SERIES_MACHINE_PUBLISHER\.publishSnapshot\(PRICE_SERIES_CACHE\)/);
+    assert.match(source, /PRICE_SERIES_MACHINE_PUBLISHER\.publishSnapshot\(/);
+    assert.match(source, /scopeIds\.length \? \{ scopeIds \} : \{\}/);
     const persist = sliceBetween('async function persistPriceSeriesToR2', 'function normalizeContractForChain');
     const readonlyStart = persist.indexOf("if (readonlyState && readonlyState.mode === 'production-readonly')");
     const directPut = persist.indexOf('new PutObjectCommand');
@@ -98,4 +99,16 @@ test('one unavailable boundary cannot starve later boundaries in the same tourna
     assert.match(sync, /PRICE_SERIES_BOUNDARY_CURSOR\.delete\(id\)/);
     assert.match(sync, /Number\(candidate\.boundaryAt\) > lastAttemptedBoundaryAt/);
     assert.match(sync, /\|\| missingBoundaries\[0\]/);
+});
+
+
+test('production Price persistence scopes machine merge to changed ids only', () => {
+    const persist = sliceBetween('async function persistPriceSeriesToR2', 'function normalizeContractForChain');
+    assert.match(persist, /const scopeIds = normalizePriceSeriesIds\(options\.scopeIds\)/);
+    assert.match(persist, /PRICE_SERIES_MACHINE_PUBLISHER\.publishSnapshot\([\s\S]*scopeIds\.length \? \{ scopeIds \} : \{\}/);
+
+    const sync = sliceBetween('async function syncTournamentPriceSeries', "app.get('/api/competition-price-series'");
+    assert.match(sync, /const changedIds = new Set\(\)/);
+    assert.match(sync, /changedIds\.add\(id\)/);
+    assert.match(sync, /persistPriceSeriesToR2\(\{ scopeIds: \[\.\.\.changedIds\] \}\)/);
 });
