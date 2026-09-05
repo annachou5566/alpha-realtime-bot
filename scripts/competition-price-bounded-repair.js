@@ -4,33 +4,17 @@ const path = require('path');
 
 const API_BASE = 'http://127.0.0.1:3100';
 const TARGETS = Object.freeze({
-    '181': { budget: 13, initialExact: 2, initialStored: 3 },
-    '182': { budget: 13, initialExact: 2, initialStored: 3 },
-    '183': { budget: 14, initialExact: 1, initialStored: 1 },
-    '184': { budget: 8, initialExact: 0, initialStored: 0 },
-    '185': { budget: 6, initialExact: 0, initialStored: 0 },
-    '186': { budget: 6, initialExact: 0, initialStored: 0 },
-    '187': { budget: 4, initialExact: 0, initialStored: 0 },
-    '188': { budget: 2, initialExact: 0, initialStored: 0 },
+    '181': { targetExact: 15, initialExact: 2, initialStored: 3 },
+    '182': { targetExact: 15, initialExact: 2, initialStored: 3 },
+    '183': { targetExact: 15, initialExact: 1, initialStored: 1 },
+    '184': { targetExact: 8, initialExact: 0, initialStored: 0 },
+    '185': { targetExact: 6, initialExact: 0, initialStored: 0 },
+    '186': { targetExact: 6, initialExact: 0, initialStored: 0 },
+    '187': { targetExact: 4, initialExact: 0, initialStored: 0 },
+    '188': { targetExact: 2, initialExact: 0, initialStored: 0 },
 });
 const TARGET_IDS = Object.keys(TARGETS);
 const TARGET_SET = new Set(TARGET_IDS);
-const PASSES = Object.freeze([
-    ['181','182','183','184','185','186','187','188'],
-    ['181','182','183','184','185','186','187','188'],
-    ['181','182','183','184','185','186','187'],
-    ['181','182','183','184','185','186','187'],
-    ['181','182','183','184','185','186'],
-    ['181','182','183','184','185','186'],
-    ['181','182','183','184'],
-    ['181','182','183','184'],
-    ['181','182','183'],
-    ['181','182','183'],
-    ['181','182','183'],
-    ['181','182','183'],
-    ['181','182','183'],
-    ['183'],
-]);
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -73,9 +57,12 @@ function isExact(point) {
 
 function pointCounts(series) {
     const points = series && Array.isArray(series.points) ? series.points : [];
+    const exactRaw = points.filter(point => point && point.quality === 'exact').length;
+    const exact = points.filter(isExact).length;
     return {
         stored: points.length,
-        exact: points.filter(isExact).length,
+        exact,
+        invalidExact: exactRaw - exact,
     };
 }
 
@@ -94,6 +81,54 @@ function validateScopedSnapshot(data, scoped) {
     }
 }
 
+function buildDynamicPasses(remainingById) {
+    const maxRemaining = Math.max(
+        0,
+        ...TARGET_IDS.map(id => Number(remainingById[id] || 0)),
+    );
+    const passes = [];
+    for (let round = 0; round < maxRemaining; round += 1) {
+        const ids = TARGET_IDS.filter(id => Number(remainingById[id] || 0) > round);
+        if (ids.length) passes.push(ids);
+    }
+    return passes;
+}
+
+function validateAndPlan(data) {
+    const remainingById = {};
+    const baselineExactById = {};
+
+    for (const id of TARGET_IDS) {
+        const counts = pointCounts(data[id]);
+        const expected = TARGETS[id];
+
+        if (counts.invalidExact !== 0) {
+            throw new Error(`invalid exact point ID=${id} count=${counts.invalidExact}`);
+        }
+        if (
+            counts.exact < expected.initialExact
+            || counts.stored < expected.initialStored
+        ) {
+            throw new Error(
+                `scope regression ID=${id} exact=${counts.exact}/min${expected.initialExact} stored=${counts.stored}/min${expected.initialStored}`
+            );
+        }
+        if (counts.exact > expected.targetExact) {
+            throw new Error(
+                `scope overflow ID=${id} exact=${counts.exact}/target${expected.targetExact}`
+            );
+        }
+
+        baselineExactById[id] = counts.exact;
+        remainingById[id] = expected.targetExact - counts.exact;
+    }
+
+    const passes = buildDynamicPasses(remainingById);
+    const budget = Object.values(remainingById).reduce((sum, value) => sum + Number(value || 0), 0);
+
+    return { remainingById, baselineExactById, passes, budget };
+}
+
 async function preflight() {
     if (!process.env.WAVE_API_KEY) throw new Error('WAVE_API_KEY missing');
 
@@ -109,17 +144,16 @@ async function preflight() {
     const scoped = exactSnapshot(data, TARGET_IDS);
     validateScopedSnapshot(data, scoped);
 
+    const plan = validateAndPlan(data);
     for (const id of TARGET_IDS) {
         const counts = pointCounts(data[id]);
-        const expected = TARGETS[id];
-        if (counts.exact !== expected.initialExact || counts.stored !== expected.initialStored) {
-            throw new Error(
-                `scope drift ID=${id} exact=${counts.exact}/${expected.initialExact} stored=${counts.stored}/${expected.initialStored}`
-            );
-        }
+        console.log(
+            `PREFLIGHT_ID=${id} EXACT=${counts.exact} STORED=${counts.stored} TARGET=${TARGETS[id].targetExact} REMAINING=${plan.remainingById[id]}`
+        );
     }
-
+    console.log(`REPAIR_DYNAMIC_BUDGET=${plan.budget}`);
     console.log('REPAIR_PREFLIGHT=PASS');
+    return plan;
 }
 
 async function runPass(passNumber, ids) {
@@ -167,7 +201,7 @@ async function runPass(passNumber, ids) {
     throw new Error(`PASS=${passNumber} unreachable`);
 }
 
-async function postcheck(totals) {
+async function postcheck(totals, plan) {
     const payload = await requestJson(
         '/api/competition-price-series?ids=' + encodeURIComponent(TARGET_IDS.join(',')),
         {},
@@ -175,32 +209,42 @@ async function postcheck(totals) {
     );
     const data = payload.data && typeof payload.data === 'object' ? payload.data : {};
     const summary = [];
+
     for (const id of TARGET_IDS) {
         const counts = pointCounts(data[id]);
-        if (counts.exact < TARGETS[id].initialExact) {
+        if (counts.invalidExact !== 0) {
+            throw new Error(`postcheck invalid exact ID=${id}`);
+        }
+        if (counts.exact < plan.baselineExactById[id]) {
             throw new Error(`postcheck exact regression ID=${id}`);
+        }
+        if (counts.exact > TARGETS[id].targetExact) {
+            throw new Error(`postcheck exact overflow ID=${id}`);
         }
         summary.push(`${id}:${counts.exact}/${counts.stored}`);
     }
 
-    if (totals.fetched > 66) throw new Error(`attempt budget exceeded: ${totals.fetched}`);
+    if (totals.fetched > plan.budget) {
+        throw new Error(`attempt budget exceeded: ${totals.fetched}/${plan.budget}`);
+    }
+
     console.log(`LOCAL_FINAL=${summary.join(' ')}`);
-    console.log(`TOTAL_FETCHED=${totals.fetched} TOTAL_STORED=${totals.stored} TOTAL_MIGRATED=${totals.migrated}`);
+    console.log(`TOTAL_FETCHED=${totals.fetched} TOTAL_STORED=${totals.stored} TOTAL_MIGRATED=${totals.migrated} BUDGET=${plan.budget}`);
     console.log('BOUNDED_REPAIR_SWEEP=PASS');
 }
 
 async function main() {
-    await preflight();
+    const plan = await preflight();
 
     const totals = { fetched: 0, stored: 0, migrated: 0 };
-    for (let i = 0; i < PASSES.length; i += 1) {
-        const result = await runPass(i + 1, PASSES[i]);
+    for (let i = 0; i < plan.passes.length; i += 1) {
+        const result = await runPass(i + 1, plan.passes[i]);
         totals.fetched += result.fetched;
         totals.stored += result.stored;
         totals.migrated += result.migrated;
-        if (i + 1 < PASSES.length) await sleep(1000);
+        if (i + 1 < plan.passes.length) await sleep(1000);
     }
-    await postcheck(totals);
+    await postcheck(totals, plan);
 }
 
 if (require.main === module) {
@@ -212,5 +256,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+    TARGETS,
     validateScopedSnapshot,
+    buildDynamicPasses,
+    validateAndPlan,
 };
