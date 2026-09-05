@@ -541,16 +541,22 @@ async function persistPriceSeriesToR2(options = {}) {
     const nextHash = stableJsonHash(PRICE_SERIES_CACHE);
     if (nextHash === PRICE_SERIES_LAST_HASH) return false;
 
-    const scopeIds = normalizePriceSeriesIds(options.scopeIds);
+    const hasScope = Object.prototype.hasOwnProperty.call(options, 'scopeIds');
+    const scopeIds = hasScope ? normalizePricePersistenceScopeIds(options.scopeIds) : [];
     const readonlyState = globalThis.__WAVE_PRODUCTION_READONLY_STATE;
     if (readonlyState && readonlyState.mode === 'production-readonly') {
+        if (!hasScope) {
+            throw new Error('Competition Price production-readonly persistence requires scoped ids');
+        }
         if (!PRICE_SERIES_MACHINE_PUBLISHER.enabled) {
             throw new Error('Competition Price machine publisher unavailable in production-readonly mode');
         }
-        await PRICE_SERIES_MACHINE_PUBLISHER.publishSnapshot(
-            PRICE_SERIES_CACHE,
-            scopeIds.length ? { scopeIds } : {},
-        );
+        for (let offset = 0; offset < scopeIds.length; offset += 32) {
+            await PRICE_SERIES_MACHINE_PUBLISHER.publishSnapshot(
+                PRICE_SERIES_CACHE,
+                { scopeIds: scopeIds.slice(offset, offset + 32) },
+            );
+        }
         PRICE_SERIES_LAST_HASH = nextHash;
         PRICE_SERIES_LAST_UPDATED_AT = Date.now();
         return true;
@@ -624,6 +630,28 @@ function normalizePriceSeriesIds(value) {
         .map(item => String(item || '').trim())
         .filter(item => /^\d{1,9}$/.test(item))))
         .slice(0, 32);
+}
+
+function normalizePricePersistenceScopeIds(value) {
+    if (!Array.isArray(value) || !value.length) {
+        throw new Error('Competition Price persistence scope requires ids');
+    }
+
+    const ids = [];
+    const seen = new Set();
+    for (const item of value) {
+        const id = String(item ?? '').trim();
+        if (!/^\d{1,9}$/.test(id)) {
+            throw new Error('Competition Price persistence scope ids must be numeric');
+        }
+        if (seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+        if (ids.length > 250) {
+            throw new Error('Competition Price persistence scope exceeds 250 ids');
+        }
+    }
+    return ids;
 }
 
 function embeddedCompetitionPriceSeries(config) {
