@@ -759,13 +759,16 @@ async function syncTournamentPriceSeries(options = {}) {
             existing.points.sort((a, b) => Number(a.boundaryAt) - Number(b.boundaryAt));
             knownBoundaries.add(boundary.boundaryAt);
             PRICE_SERIES_CACHE[id] = existing;
+            changedIds.add(id);
             stored += 1;
         }
 
         if (!dryRun && configCount) {
             PRICE_SERIES_CONFIG_CURSOR = (startCursor + Math.max(1, visitedConfigs)) % configCount;
         }
-        if (!dryRun && (stored > 0 || migrated > 0)) await persistPriceSeriesToR2();
+        if (!dryRun && (stored > 0 || migrated > 0)) {
+            await persistPriceSeriesToR2({ scopeIds: [...changedIds] });
+        }
         return {
             skipped: false,
             fetched,
