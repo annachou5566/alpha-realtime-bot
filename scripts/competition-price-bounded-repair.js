@@ -84,22 +84,21 @@ async function preflight() {
 
     const releaseRoot = process.env.WAVE_RELEASE_ROOT || '/opt/wave-alpha/alpha-realtime/current';
     const { exactSnapshot } = require(path.join(releaseRoot, 'lib/competition-price-series-publisher.js'));
-    const { stableJson } = require(path.join(releaseRoot, 'lib/alpha-live-publisher.js'));
 
     const payload = await requestJson('/api/competition-price-series', {}, 30000);
     if (Number(payload.version) !== 3 || payload.boundaryModel !== 'dual') {
         throw new Error('unexpected Price series envelope');
     }
     const data = payload.data && typeof payload.data === 'object' ? payload.data : {};
-    const keys = Object.keys(data);
-    if (keys.length > 250) throw new Error(`full snapshot has ${keys.length} series; publisher cap is 250`);
 
-    const canonical = exactSnapshot(data);
-    const outsideChanged = keys.filter(id => (
-        !TARGET_SET.has(id) && stableJson(data[id]) !== stableJson(canonical[id])
-    ));
-    if (outsideChanged.length) {
-        throw new Error(`scope guard: publisher would alter outside IDs: ${outsideChanged.slice(0, 12).join(',')}`);
+    const scoped = exactSnapshot(data, TARGET_IDS);
+    const scopedKeys = Object.keys(scoped);
+    if (
+        scopedKeys.length !== TARGET_IDS.length
+        || scopedKeys.some(id => !TARGET_SET.has(id))
+        || TARGET_IDS.some(id => !Object.prototype.hasOwnProperty.call(scoped, id))
+    ) {
+        throw new Error('scope guard: scoped publisher snapshot is not exactly 181-188');
     }
 
     for (const id of TARGET_IDS) {
