@@ -79,6 +79,21 @@ function pointCounts(series) {
     };
 }
 
+function validateScopedSnapshot(data, scoped) {
+    const presentTargetIds = TARGET_IDS.filter(
+        id => Object.prototype.hasOwnProperty.call(data, id)
+    );
+    const scopedKeys = Object.keys(scoped);
+
+    if (
+        scopedKeys.some(id => !TARGET_SET.has(id))
+        || scopedKeys.length !== presentTargetIds.length
+        || presentTargetIds.some(id => !Object.prototype.hasOwnProperty.call(scoped, id))
+    ) {
+        throw new Error('scope guard: scoped publisher snapshot differs from present targets 181-188');
+    }
+}
+
 async function preflight() {
     if (!process.env.WAVE_API_KEY) throw new Error('WAVE_API_KEY missing');
 
@@ -92,14 +107,7 @@ async function preflight() {
     const data = payload.data && typeof payload.data === 'object' ? payload.data : {};
 
     const scoped = exactSnapshot(data, TARGET_IDS);
-    const scopedKeys = Object.keys(scoped);
-    if (
-        scopedKeys.length !== TARGET_IDS.length
-        || scopedKeys.some(id => !TARGET_SET.has(id))
-        || TARGET_IDS.some(id => !Object.prototype.hasOwnProperty.call(scoped, id))
-    ) {
-        throw new Error('scope guard: scoped publisher snapshot is not exactly 181-188');
-    }
+    validateScopedSnapshot(data, scoped);
 
     for (const id of TARGET_IDS) {
         const counts = pointCounts(data[id]);
@@ -195,8 +203,14 @@ async function main() {
     await postcheck(totals);
 }
 
-main().catch(error => {
-    console.error('BOUNDED_REPAIR_SWEEP=FAIL');
-    console.error('REASON=' + (error && error.message ? error.message : String(error)));
-    process.exitCode = 1;
-});
+if (require.main === module) {
+    main().catch(error => {
+        console.error('BOUNDED_REPAIR_SWEEP=FAIL');
+        console.error('REASON=' + (error && error.message ? error.message : String(error)));
+        process.exitCode = 1;
+    });
+}
+
+module.exports = {
+    validateScopedSnapshot,
+};
