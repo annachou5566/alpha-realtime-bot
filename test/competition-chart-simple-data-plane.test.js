@@ -43,7 +43,7 @@ test('normal runtime does not silently enable historical backfill or add another
     assert.match(source, /setInterval\(\(\) => syncTournamentPriceSeries\(\{ maxFetches: 6 \}\)/);
     assert.doesNotMatch(source, /setInterval\([^\n]*includeHistory:\s*true/);
     const admin = sliceBetween("app.post('/api/admin/backfill-competition-prices'", 'async function syncActiveConfig');
-    assert.match(admin, /includeHistory: req\.body && req\.body\.includeHistory !== false/);
+    assert.match(admin, /includeHistory: body\.includeHistory !== false/);
 });
 
 
