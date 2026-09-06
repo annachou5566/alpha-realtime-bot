@@ -38,7 +38,7 @@ test('Alpha config signal hardening applies exact anchors and stays separate fro
     assert.match(source, /canonicalAccumulatedLimit/);
     assert.match(source, /Math\.max\(liveAccumulatedTotal, canonicalAccumulatedTotal\)/);
     assert.match(source, /Math\.max\(liveAccumulatedLimit, canonicalAccumulatedLimit\)/);
-    assert.match(source, /const cumulativeReady = accumulatedTotal !== null && accumulatedLimit !== null && accumulatedLimit <= accumulatedTotal/);
+    assert.match(source, /const cumulativeReady = accumulatedTotal !== null && accumulatedLimit !== null && accumulatedOnchain !== null && accumulatedLimit <= accumulatedTotal/);
 
     // Spot exists elsewhere in the legacy runtime. Prove this transform does not
     // add any new Spot route reference by comparing occurrence counts before/after.
