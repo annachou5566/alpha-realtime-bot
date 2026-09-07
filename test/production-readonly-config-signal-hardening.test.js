@@ -34,10 +34,13 @@ test('Alpha config signal hardening applies exact anchors and stays separate fro
     assert.match(source, /configSignal:/);
     assert.match(source, /X-Wave-Competition-Revision/);
     assert.match(source, /rememberRow: waveRememberCompetitionRow/);
+    assert.match(source, /canonicalDailyTotal/);
+    assert.match(source, /canonicalDailyLimit/);
     assert.match(source, /canonicalAccumulatedTotal/);
     assert.match(source, /canonicalAccumulatedLimit/);
-    assert.match(source, /Math\.max\(liveAccumulatedTotal, canonicalAccumulatedTotal\)/);
-    assert.match(source, /Math\.max\(liveAccumulatedLimit, canonicalAccumulatedLimit\)/);
+    assert.match(source, /const prospectiveTotalDelta = rawTotalDelta !== null && rawLimitDelta !== null/);
+    assert.match(source, /Math\.max\(rawTotalDelta, rawLimitDelta\)/);
+    assert.doesNotMatch(source, /liveAccumulatedTotal|liveAccumulatedLimit/);
     assert.match(source, /const cumulativeReady = accumulatedTotal !== null && accumulatedLimit !== null && accumulatedOnchain !== null && accumulatedLimit <= accumulatedTotal/);
 
     // Spot exists elsewhere in the legacy runtime. Prove this transform does not
@@ -52,7 +55,7 @@ test('Alpha config signal hardening applies exact anchors and stays separate fro
     assert.match(baseHardened.source, /writeSafety:/);
 });
 
-test('Alpha live cumulative onchain preserves canonical baseline and adds only prospective delta', () => {
+test('Alpha live cumulative is derived from canonical daily delta and ignores legacy accumulated drift', () => {
     const original = fs.readFileSync(INDEX_PATH, 'utf8');
     const { source } = hardenCompetitionConfigSignalSource(original);
 
@@ -64,17 +67,19 @@ test('Alpha live cumulative onchain preserves canonical baseline and adds only p
         ACTIVE_CONFIG: {
             alpha: {
                 db_id: 7,
+                real_alpha_volume: 20,
+                limit_daily_volume: 10,
                 total_accumulated_volume: 100,
                 limit_accumulated_volume: 40,
-                onchain_accumulated_volume: 70,
+                onchain_accumulated_volume: 60,
             },
         },
         GLOBAL_MARKET: {
             alpha: {
-                effectiveTodayVol: 10,
-                totalAccumulated: 110,
-                limitAccumulated: 45,
-                v: { dl: 5 },
+                effectiveTodayVol: 25,
+                totalAccumulated: 101,
+                limitAccumulated: 80,
+                v: { dl: 20 },
                 tx: 12,
             },
         },
@@ -86,9 +91,50 @@ test('Alpha live cumulative onchain preserves canonical baseline and adds only p
     vm.runInNewContext(source.slice(start, end), context);
     const snapshot = context.waveBuildAlphaLiveVolumeSnapshot();
 
+    assert.equal(snapshot.items.alpha.dailyTotal, 25);
+    assert.equal(snapshot.items.alpha.dailyLimit, 20);
     assert.equal(snapshot.items.alpha.accumulatedTotal, 110);
+    assert.equal(snapshot.items.alpha.accumulatedLimit, 50);
+    assert.equal(snapshot.items.alpha.accumulatedOnchain, 60);
+});
+
+test('Alpha live cumulative adds prospective onchain only when total delta exceeds limit delta', () => {
+    const original = fs.readFileSync(INDEX_PATH, 'utf8');
+    const { source } = hardenCompetitionConfigSignalSource(original);
+
+    const start = source.indexOf('function waveFiniteLiveNumber(value) {');
+    const end = source.indexOf('function waveBuildAlphaLiveState() {', start);
+    assert.ok(start >= 0 && end > start);
+
+    const context = {
+        ACTIVE_CONFIG: {
+            alpha: {
+                db_id: 7,
+                real_alpha_volume: 20,
+                limit_daily_volume: 10,
+                total_accumulated_volume: 100,
+                limit_accumulated_volume: 40,
+                onchain_accumulated_volume: 60,
+            },
+        },
+        GLOBAL_MARKET: {
+            alpha: {
+                effectiveTodayVol: 35,
+                v: { dl: 15 },
+                tx: 12,
+            },
+        },
+        ALPHA_LIVE_VOLUME_OBSERVED_AT: 123456,
+        ALPHA_LIVE_VOLUME_REVISION: 9,
+        LIMIT_MAP_CACHE: { ts: 123450 },
+    };
+
+    vm.runInNewContext(source.slice(start, end), context);
+    const snapshot = context.waveBuildAlphaLiveVolumeSnapshot();
+
+    assert.equal(snapshot.items.alpha.accumulatedTotal, 115);
     assert.equal(snapshot.items.alpha.accumulatedLimit, 45);
-    assert.equal(snapshot.items.alpha.accumulatedOnchain, 75);
+    assert.equal(snapshot.items.alpha.accumulatedOnchain, 70);
 });
 
 test('Alpha config signal hardening fails closed when an expected anchor drifts', () => {
