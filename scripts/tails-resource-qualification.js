@@ -2,7 +2,6 @@
 'use strict';
 
 const axios = require('axios');
-const { S3Client } = require('@aws-sdk/client-s3');
 const { runTailsProducer } = require('../lib/tails-producer');
 
 function envInt(name, fallback, min, max) {
@@ -18,29 +17,12 @@ async function main() {
         return;
     }
 
-    const endpoint = process.env.R2_ENDPOINT_URL;
-    const bucket = process.env.R2_BUCKET_NAME;
-    const accessKeyId = process.env.R2_READ_ONLY_ACCESS_KEY_ID;
-    const secretAccessKey = process.env.R2_READ_ONLY_SECRET_ACCESS_KEY;
-
-    if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) {
-        console.error('TAILS_QUALIFICATION_GATE=FAIL missing read-only R2 configuration');
-        process.exitCode = 65;
-        return;
-    }
-
     const rawMaxTokens = Number.parseInt(process.env.TAILS_QUAL_MAX_TOKENS || '24', 10);
     const maxTokens = Number.isFinite(rawMaxTokens) && rawMaxTokens === 0
         ? 0
         : Math.min(64, Math.max(4, Number.isFinite(rawMaxTokens) ? rawMaxTokens : 24));
     const concurrency = envInt('TAILS_QUAL_CONCURRENCY', 2, 1, 4);
     const maxRequests = envInt('TAILS_QUAL_MAX_REQUESTS', 320, 40, 1200);
-
-    const s3Client = new S3Client({
-        region: 'auto',
-        endpoint,
-        credentials: { accessKeyId, secretAccessKey },
-    });
 
     const startHr = process.hrtime.bigint();
     const startCpu = process.cpuUsage();
@@ -63,8 +45,6 @@ async function main() {
     try {
         const result = await runTailsProducer({
             http: axios,
-            s3Client,
-            bucket,
             qualificationOnly: true,
             maxTokens,
             concurrency,
@@ -84,7 +64,12 @@ async function main() {
             liveOnlineAcceptedWithoutCache: result.liveOnlineAcceptedWithoutCache,
             selectedCohortCount: result.selectedCohortCount,
             selectedBscCount: result.selectedBscCount,
-            marketDataBytes: result.marketDataBytes,
+            onlineCount: result.onlineCount,
+            offlineProbedCount: result.offlineProbedCount,
+            offlineRevivedCount: result.offlineRevivedCount,
+            offlineExcludedCount: result.offlineExcludedCount,
+            supportedLimitCount: result.supportedLimitCount,
+            unsupportedLimitCount: result.unsupportedLimitCount,
             payloadBytes: result.payloadBytes,
             httpRequests: result.http.requests,
             httpRetries: result.http.retries,
@@ -118,7 +103,6 @@ async function main() {
         process.exitCode = 1;
     } finally {
         clearInterval(sampler);
-        s3Client.destroy();
     }
 }
 
