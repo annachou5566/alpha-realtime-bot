@@ -87,13 +87,53 @@ test('previous UTC boundary is exact to the millisecond', () => {
     assert.equal(BOUNDARY.windowEnd, '2026-09-07T23:59:59.999Z');
 });
 
-test('cohort fails closed when canonical status is missing', () => {
+test('current online Binance row is accepted even when stale cache has no status', () => {
     const raw = [
-        { alphaId: 'A', chainId: 56, contractAddress: '0xA' },
-        { alphaId: 'B', chainId: 56, contractAddress: '0xB' },
+        { alphaId: 'A', chainId: 56, contractAddress: '0xA', offline: false },
+        { alphaId: 'B', chainId: 56, contractAddress: '0xB', offline: false },
     ];
     const statuses = new Map([['A', 'ALPHA']]);
-    assert.throws(() => buildCohort(raw, statuses), /market-status-missing:1/);
+    const cohort = buildCohort(raw, statuses);
+    assert.deepEqual(cohort.map(x => x.alphaId), ['A', 'B']);
+    assert.equal(cohort[1].statusSource, 'binance-live');
+    assert.equal(cohort.diagnostics.liveOnlineAcceptedWithoutCache, 1);
+});
+
+test('offline non-CEX row without canonical cache status still fails closed', () => {
+    const raw = [
+        {
+            alphaId: 'B',
+            chainId: 56,
+            contractAddress: '0xB',
+            offline: true,
+            listingCex: false,
+        },
+    ];
+    const statuses = new Map();
+    assert.throws(
+        () => buildCohort(raw, statuses),
+        /market-status-ambiguous-offline:1/,
+    );
+});
+
+test('offline listing-CEX row is excluded without requiring stale cache status', () => {
+    const raw = [
+        {
+            alphaId: 'S',
+            chainId: 56,
+            contractAddress: '0xS',
+            offline: true,
+            listingCex: true,
+        },
+        {
+            alphaId: 'A',
+            chainId: 56,
+            contractAddress: '0xA',
+            offline: false,
+        },
+    ];
+    const cohort = buildCohort(raw, new Map());
+    assert.deepEqual(cohort.map(x => x.alphaId), ['A']);
 });
 
 test('qualification sampling exercises BSC limit and non-BSC paths', () => {
@@ -137,6 +177,7 @@ test('qualification-only producer performs no R2 mutation', async () => {
 
     assert.equal(result.qualificationOnly, true);
     assert.equal(result.fullCohortCount, 2);
+    assert.equal(result.liveOnlineAcceptedWithoutCache, 0);
     assert.equal(result.selectedCohortCount, 2);
     assert.equal(result.selectedBscCount, 1);
     assert.equal(result.publication, null);
