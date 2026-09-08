@@ -964,7 +964,10 @@ async function syncTailsFromR2(options = {}) {
                 Key: key,
             }));
             const nextEtag = String(head && head.ETag || '');
-            if (nextEtag && nextEtag === TAILS_CACHE_ETAG) {
+            const tailCacheReady =
+                Object.keys(SNAPSHOT_TAIL_TOTAL).length > 0
+                && Object.keys(SNAPSHOT_TAIL_LIMIT).length > 0;
+            if (nextEtag && nextEtag === TAILS_CACHE_ETAG && tailCacheReady) {
                 console.log('🦊 Tails Cache unchanged; skipped 24 MB body download.');
                 return { changed: false, etag: nextEtag };
             }
@@ -1049,10 +1052,12 @@ setInterval(() => {
         MARKET_VOL_HISTORY.push({ date: yStr, daily: totalDaily, rolling: totalDaily });
         if (MARKET_VOL_HISTORY.length > 14) MARKET_VOL_HISTORY.shift(); 
         
-        SNAPSHOT_TAIL_TOTAL = {}; 
-        SNAPSHOT_TAIL_LIMIT = {};
+        // Preserve the last-good per-minute 24h tail baselines across UTC rollover.
+        // Clearing these maps makes the next realtime loop treat a missing baseline as 0,
+        // which turns the entire rolling-24h volume into the new day's Daily volume.
+        // syncTailsFromR2() will atomically replace the maps when a newer R2 ETag arrives.
         
-        console.log("🕛 Đã qua ngày mới! Cập nhật 1 cây nến vào lịch sử thành công.");
+        console.log("🕛 Đã qua ngày mới! Cập nhật 1 cây nến vào lịch sử và giữ tail baseline.");
     }
 }, 60000);
 

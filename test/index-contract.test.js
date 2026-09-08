@@ -36,4 +36,25 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /Number\(dryRun\.missing \|\| 0\) > 0 \|\| Number\(dryRun\.migrated \|\| 0\) > 0/);
 });
 
+
+test('UTC rollover preserves last-good tail baselines and empty RAM cannot be hidden by an unchanged ETag', () => {
+    assert.match(source, /const tailCacheReady =/);
+    assert.match(
+        source,
+        /nextEtag && nextEtag === TAILS_CACHE_ETAG && tailCacheReady/
+    );
+
+    const rolloverStart = source.indexOf('let lastHistoryDay = new Date().getUTCDate();');
+    const rolloverEnd = source.indexOf('// ==========================================\n// 2. LOGIC TÍNH TOÁN AI PREDICTION', rolloverStart);
+    assert.ok(rolloverStart >= 0 && rolloverEnd > rolloverStart);
+
+    const rollover = source.slice(rolloverStart, rolloverEnd);
+    assert.doesNotMatch(rollover, /SNAPSHOT_TAIL_TOTAL\s*=\s*\{\}/);
+    assert.doesNotMatch(rollover, /SNAPSHOT_TAIL_LIMIT\s*=\s*\{\}/);
+    assert.match(rollover, /Preserve the last-good per-minute 24h tail baselines across UTC rollover/);
+
+    assert.match(source, /const tailTot = SNAPSHOT_TAIL_TOTAL\[id\]\?\.\[currentMinute\] \|\| 0/);
+    assert.match(source, /let dailyTot = Math\.max\(0, rollVolTot - tailTot\)/);
+});
+
 // Canonical CI trigger for the final reviewed rollout head.
