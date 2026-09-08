@@ -61,7 +61,6 @@ async function main() {
         const summary = {
             boundaryDate: result.boundaryDate,
             fullCohortCount: result.fullCohortCount,
-            liveOnlineAcceptedWithoutCache: result.liveOnlineAcceptedWithoutCache,
             selectedCohortCount: result.selectedCohortCount,
             selectedBscCount: result.selectedBscCount,
             onlineCount: result.onlineCount,
