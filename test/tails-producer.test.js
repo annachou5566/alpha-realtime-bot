@@ -8,6 +8,7 @@ const {
     resolveLiveCohort,
     selectQualificationCohort,
     parseKlinePayload,
+    requestParsedKline,
     buildSuffixSum,
     buildPayload,
     runTailsProducer,
@@ -179,6 +180,107 @@ test('kline -5101 is explicit unsupported capability, not missing zero', () => {
     }, 'ALPHA_994', 'limit');
     assert.equal(parsed.capability, 'unsupported');
     assert.deepEqual(parsed.rows, []);
+});
+
+test('transient HTTP-200 success envelope missing klineInfos is retried once then accepted', async () => {
+    let calls = 0;
+    const metrics = {
+        requests: 0,
+        responseBytes: 0,
+        retries: 0,
+        contractRetries: 0,
+        byKind: Object.create(null),
+    };
+    const http = {
+        async get() {
+            calls += 1;
+            if (calls === 1) {
+                return {
+                    status: 200,
+                    data: {
+                        code: '000000',
+                        success: true,
+                        data: {},
+                    },
+                };
+            }
+            return {
+                status: 200,
+                data: {
+                    code: '000000',
+                    success: true,
+                    data: {
+                        klineInfos: [[BOUNDARY.startMs, 0, 0, 0, 0, 5]],
+                    },
+                },
+            };
+        },
+    };
+
+    const parsed = await requestParsedKline(
+        http,
+        'https://example.invalid/kline',
+        'ALPHA_1155',
+        'aggregate',
+        {
+            metrics,
+            kind: 'kline-aggregate',
+            retries: 1,
+            contractAttempts: 2,
+            contractRetryDelayMs: 0,
+            maxRequests: 10,
+        },
+    );
+
+    assert.equal(parsed.capability, 'supported');
+    assert.equal(parsed.rows.length, 1);
+    assert.equal(calls, 2);
+    assert.equal(metrics.requests, 2);
+    assert.equal(metrics.contractRetries, 1);
+});
+
+test('persistent malformed success envelope remains fail-closed after bounded contract retry', async () => {
+    let calls = 0;
+    const metrics = {
+        requests: 0,
+        responseBytes: 0,
+        retries: 0,
+        contractRetries: 0,
+        byKind: Object.create(null),
+    };
+    const http = {
+        async get() {
+            calls += 1;
+            return {
+                status: 200,
+                data: {
+                    code: '000000',
+                    success: true,
+                    data: {},
+                },
+            };
+        },
+    };
+
+    await assert.rejects(
+        requestParsedKline(
+            http,
+            'https://example.invalid/kline',
+            'ALPHA_1155',
+            'aggregate',
+            {
+                metrics,
+                kind: 'kline-aggregate',
+                retries: 1,
+                contractAttempts: 2,
+                contractRetryDelayMs: 0,
+                maxRequests: 10,
+            },
+        ),
+        /kline-rows-contract:ALPHA_1155:aggregate/,
+    );
+    assert.equal(calls, 2);
+    assert.equal(metrics.contractRetries, 1);
 });
 
 test('qualification sampling exercises BSC and non-BSC paths', () => {
