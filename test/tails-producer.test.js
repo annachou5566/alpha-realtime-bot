@@ -46,6 +46,7 @@ function createHttpMock() {
                             token('C', 56, '0xC'),
                             token('D', 56, '0xD', { offline: true }),
                             token('E', 56, '0xE', { offline: true }),
+                            token('F', 56, '0xF', { offline: true }),
                             token('S', 56, '0xS', { offline: true, listingCex: true }),
                         ],
                     },
@@ -64,6 +65,16 @@ function createHttpMock() {
                         data: {
                             code: '-5101',
                             message: 'current token not support limit data source',
+                            data: null,
+                        },
+                    };
+                }
+                if (addr === '0xf') {
+                    return {
+                        status: 200,
+                        data: {
+                            code: '-5095',
+                            message: 'bad token address',
                             data: null,
                         },
                     };
@@ -131,12 +142,13 @@ test('cohort uses live state and stages offline non-CEX rows for requalification
     assert.equal(cohort.diagnostics.excludedSpot, 1);
 });
 
-test('offline liveness requalification excludes -5101 and revives positive recent limit volume', async () => {
+test('offline liveness excludes -5101/-5095 and revives only positive recent limit volume', async () => {
     const http = createHttpMock();
     const cohort = await resolveLiveCohort(http, [
         token('A', 56, '0xA'),
         token('D', 56, '0xD', { offline: true }),
         token('E', 56, '0xE', { offline: true }),
+        token('F', 56, '0xF', { offline: true }),
     ], {
         concurrency: 2,
         maxRequests: 20,
@@ -144,10 +156,20 @@ test('offline liveness requalification excludes -5101 and revives positive recen
 
     assert.deepEqual(cohort.map(x => x.alphaId), ['A', 'E']);
     assert.equal(cohort.diagnostics.online, 1);
-    assert.equal(cohort.diagnostics.offlineProbed, 2);
+    assert.equal(cohort.diagnostics.offlineProbed, 3);
     assert.equal(cohort.diagnostics.offlineRevived, 1);
-    assert.equal(cohort.diagnostics.offlineExcluded, 1);
+    assert.equal(cohort.diagnostics.offlineExcluded, 2);
     assert.equal(cohort.diagnostics.offlineUnsupported, 1);
+    assert.equal(cohort.diagnostics.offlineInvalidAddress, 1);
+});
+
+test('kline -5095 is explicit invalid-address evidence, not a fabricated zero', () => {
+    const parsed = parseKlinePayload({
+        code: '-5095',
+        message: 'bad token address',
+    }, 'ALPHA_798', 'limit-liveness');
+    assert.equal(parsed.capability, 'invalid-address');
+    assert.deepEqual(parsed.rows, []);
 });
 
 test('kline -5101 is explicit unsupported capability, not missing zero', () => {
@@ -225,19 +247,57 @@ test('qualification-only producer is Binance-only and performs no R2 mutation', 
     assert.equal(result.qualificationOnly, true);
     assert.equal(result.fullCohortCount, 4);
     assert.equal(result.onlineCount, 3);
-    assert.equal(result.offlineProbedCount, 2);
+    assert.equal(result.offlineProbedCount, 3);
     assert.equal(result.offlineRevivedCount, 1);
-    assert.equal(result.offlineExcludedCount, 1);
+    assert.equal(result.offlineExcludedCount, 2);
+    assert.equal(result.offlineInvalidAddressCount, 1);
     assert.equal(result.selectedCohortCount, 4);
     assert.equal(result.selectedBscCount, 3);
     assert.equal(result.supportedLimitCount, 2);
     assert.equal(result.unsupportedLimitCount, 1);
     assert.equal(result.publication, null);
-    assert.equal(result.http.requests, 10);
+    assert.equal(result.http.requests, 11);
     assert.equal(result.http.byKind['bulk-total'], 1);
-    assert.equal(result.http.byKind['offline-liveness-limit'], 2);
+    assert.equal(result.http.byKind['offline-liveness-limit'], 3);
     assert.equal(result.http.byKind['kline-aggregate'], 4);
     assert.equal(result.http.byKind['kline-limit'], 3);
+});
+
+test('active tail fetch fails closed if Binance returns -5095 invalid address', async () => {
+    const http = createHttpMock();
+    const baseGet = http.get.bind(http);
+    http.get = async url => {
+        const parsed = new URL(url);
+        if (
+            parsed.pathname.includes('agg-klines')
+            && parsed.searchParams.get('interval') === '1m'
+            && parsed.searchParams.get('dataType') === 'limit'
+            && parsed.searchParams.get('tokenAddress') === '0xa'
+        ) {
+            return {
+                status: 200,
+                data: {
+                    code: '-5095',
+                    message: 'bad token address',
+                    data: null,
+                },
+            };
+        }
+        return baseGet(url);
+    };
+
+    await assert.rejects(
+        runTailsProducer({
+            http,
+            nowMs: NOW,
+            qualificationOnly: true,
+            maxTokens: 0,
+            concurrency: 2,
+            maxRequests: 40,
+            logger: { log() {} },
+        }),
+        /kline-invalid-address:A:limit/,
+    );
 });
 
 test('write mode is blocked unless explicit production-write authorization exists', async () => {
