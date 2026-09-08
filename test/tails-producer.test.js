@@ -283,6 +283,61 @@ test('persistent malformed success envelope remains fail-closed after bounded co
     assert.equal(metrics.contractRetries, 1);
 });
 
+test('newly-listed short kline page stops pagination before pre-listing time', async () => {
+    const calls = [];
+    const http = {
+        async get(url) {
+            calls.push(url);
+            const parsed = new URL(url);
+            if (parsed.pathname.includes('aggTicker24')) {
+                return {
+                    status: 200,
+                    data: {
+                        success: true,
+                        data: [
+                            token('CNPY', 56, '0xCNPY'),
+                        ],
+                    },
+                };
+            }
+
+            const dataType = parsed.searchParams.get('dataType');
+            const endTime = parsed.searchParams.get('endTime');
+            const start = BOUNDARY.startMs + 12 * 60 * 60 * 1000;
+            const rows = Array.from({ length: 718 }, (_, i) => [
+                start + i * 60_000,
+                0, 0, 0, 0, dataType === 'limit' ? 2 : 5,
+            ]);
+
+            assert.equal(endTime, String(BOUNDARY.endMs));
+            return {
+                status: 200,
+                data: {
+                    code: '000000',
+                    success: true,
+                    data: { klineInfos: rows },
+                },
+            };
+        },
+    };
+
+    const result = await runTailsProducer({
+        http,
+        nowMs: NOW,
+        qualificationOnly: true,
+        maxTokens: 0,
+        concurrency: 1,
+        maxRequests: 10,
+        logger: { log() {} },
+    });
+
+    assert.equal(result.fullCohortCount, 1);
+    assert.equal(result.http.byKind['kline-aggregate'], 1);
+    assert.equal(result.http.byKind['kline-limit'], 1);
+    assert.equal(result.http.requests, 3);
+    assert.equal(calls.length, 3);
+});
+
 test('qualification sampling exercises BSC and non-BSC paths', () => {
     const cohort = [
         { alphaId: 'A', chainId: '56' },
