@@ -140,7 +140,14 @@ printf 'CREDENTIAL_GATE=NOT_REQUIRED qualification_source=binance_first_party_on
 
 qual_rc=0
 set +e
-sudo -n -u wavealpha-alpha env   NODE_PATH="$CURRENT_APP/node_modules"   R2_ENDPOINT_URL="$R2_ENDPOINT_URL"   R2_BUCKET_NAME="$R2_BUCKET_NAME"   R2_READ_ONLY_ACCESS_KEY_ID="$r2_id"   R2_READ_ONLY_SECRET_ACCESS_KEY="$r2_secret"   TAILS_QUALIFICATION_ONLY=true   TAILS_QUAL_MAX_TOKENS="$MAX_TOKENS"   TAILS_QUAL_CONCURRENCY="$CONCURRENCY"   TAILS_QUAL_MAX_REQUESTS="$REQUEST_BUDGET"   "$NODE_BIN" "$QUAL_DIR/scripts/tails-resource-qualification.js"   >"$RESULT_FILE" 2>&1
+sudo -n -u wavealpha-alpha env \
+  NODE_PATH="$CURRENT_APP/node_modules" \
+  TAILS_QUALIFICATION_ONLY=true \
+  TAILS_QUAL_MAX_TOKENS="$MAX_TOKENS" \
+  TAILS_QUAL_CONCURRENCY="$CONCURRENCY" \
+  TAILS_QUAL_MAX_REQUESTS="$REQUEST_BUDGET" \
+  "$NODE_BIN" "$QUAL_DIR/scripts/tails-resource-qualification.js" \
+  >"$RESULT_FILE" 2>&1
 qual_rc=$?
 set -e
 printf 'QUALIFICATION_RC=%s\n' "$qual_rc"
