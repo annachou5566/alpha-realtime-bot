@@ -73,6 +73,7 @@ async function main() {
             payloadBytes: result.payloadBytes,
             httpRequests: result.http.requests,
             httpRetries: result.http.retries,
+            httpContractRetries: result.http.contractRetries,
             httpResponseBytes: result.http.responseBytes,
             httpByKind: result.http.byKind,
             durationMs: Math.round(durationMs),
