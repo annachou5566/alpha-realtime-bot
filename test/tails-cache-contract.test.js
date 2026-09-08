@@ -117,6 +117,11 @@ test('payload contract requires exact window, key hashes, and coverage', () => {
 
     const wrongTotalKeys = goodPayload();
     wrongTotalKeys.total = { ALPHA_2: Array(1440).fill(10) };
+    wrongTotalKeys.limit = { ALPHA_2: Array(1440).fill(4) };
+    wrongTotalKeys.limit_applicable_ids_hash = stableIdsHash(['ALPHA_2']);
+    wrongTotalKeys.classified_limit_ids_hash = stableIdsHash(['ALPHA_2']);
+    wrongTotalKeys.expected_limit_ids_hash = stableIdsHash(['ALPHA_2']);
+    wrongTotalKeys.covered_limit_ids_hash = stableIdsHash(['ALPHA_2']);
     assert.equal(validateTailsPayload(wrongTotalKeys, NOW).reason, 'total-keys-hash');
 
     const wrongLimitKeys = goodPayload();
