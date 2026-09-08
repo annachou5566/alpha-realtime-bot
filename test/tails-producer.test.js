@@ -136,6 +136,22 @@ test('offline listing-CEX row is excluded without requiring stale cache status',
     assert.deepEqual(cohort.map(x => x.alphaId), ['A']);
 });
 
+test('current online Binance row overrides a stale cached SPOT classification', () => {
+    const raw = [
+        {
+            alphaId: 'C',
+            chainId: 56,
+            contractAddress: '0xC',
+            offline: false,
+            listingCex: false,
+        },
+    ];
+    const statuses = new Map([['C', 'SPOT']]);
+    const cohort = buildCohort(raw, statuses);
+    assert.deepEqual(cohort.map(x => x.alphaId), ['C']);
+    assert.equal(cohort[0].statusSource, 'binance-live+cache');
+});
+
 test('qualification sampling exercises BSC limit and non-BSC paths', () => {
     const cohort = [
         { alphaId: 'A', chainId: '56' },
@@ -176,7 +192,7 @@ test('qualification-only producer performs no R2 mutation', async () => {
     });
 
     assert.equal(result.qualificationOnly, true);
-    assert.equal(result.fullCohortCount, 2);
+    assert.equal(result.fullCohortCount, 3);
     assert.equal(result.liveOnlineAcceptedWithoutCache, 0);
     assert.equal(result.selectedCohortCount, 2);
     assert.equal(result.selectedBscCount, 1);
