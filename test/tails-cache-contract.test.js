@@ -125,7 +125,8 @@ test('payload contract requires exact window, key hashes, and coverage', () => {
     assert.equal(validateTailsPayload(wrongTotalKeys, NOW).reason, 'total-keys-hash');
 
     const wrongLimitKeys = goodPayload();
-    wrongLimitKeys.limit = { ALPHA_2: Array(1440).fill(4) };
+    wrongLimitKeys.expected_limit_ids_hash = stableIdsHash(['ALPHA_2']);
+    wrongLimitKeys.covered_limit_ids_hash = stableIdsHash(['ALPHA_2']);
     assert.equal(validateTailsPayload(wrongLimitKeys, NOW).reason, 'limit-keys-hash');
 
     const malformed = goodPayload();
