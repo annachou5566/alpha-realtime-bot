@@ -9,9 +9,6 @@ EXPECTED_QUAL_SHA="${EXPECTED_QUAL_SHA:-}"
 SERVICE="${SERVICE:-alpha-realtime-production-readonly.service}"
 NODE_BIN="${NODE_BIN:-/opt/wave-alpha/node/current/bin/node}"
 CURRENT_APP="${CURRENT_APP:-/opt/wave-alpha/alpha-realtime/current}"
-CRED_DIR="${CRED_DIR:-/run/wave-alpha-alpha/credentials}"
-R2_ENDPOINT_URL="${R2_ENDPOINT_URL:-https://0f534c1b6f9bc097235b37c07d1dc32e.r2.cloudflarestorage.com}"
-R2_BUCKET_NAME="${R2_BUCKET_NAME:-wave-alpha-data}"
 MAX_TOKENS="${TAILS_QUAL_MAX_TOKENS:-24}"
 CONCURRENCY="${TAILS_QUAL_CONCURRENCY:-2}"
 REQUEST_BUDGET="${TAILS_QUAL_MAX_REQUESTS:-320}"
@@ -139,28 +136,13 @@ if load > 1.00:
 print("RESOURCE_PREFLIGHT=PASS")
 PY
 
-for name in R2_READ_ONLY_ACCESS_KEY_ID R2_READ_ONLY_SECRET_ACCESS_KEY; do
-  sudo -n test -s "$CRED_DIR/$name" || {
-    printf 'CREDENTIAL_GATE=FAIL name=%s\n' "$name"
-    exit 74
-  }
-done
-printf 'CREDENTIAL_GATE=PASS values_printed=NO\n'
-
-r2_id="$(sudo -n cat "$CRED_DIR/R2_READ_ONLY_ACCESS_KEY_ID")"
-r2_secret="$(sudo -n cat "$CRED_DIR/R2_READ_ONLY_SECRET_ACCESS_KEY")"
-[[ -n "$r2_id" && -n "$r2_secret" ]] || {
-  printf 'CREDENTIAL_GATE=FAIL reason=empty\n'
-  exit 75
-}
+printf 'CREDENTIAL_GATE=NOT_REQUIRED qualification_source=binance_first_party_only\n'
 
 qual_rc=0
 set +e
 sudo -n -u wavealpha-alpha env   NODE_PATH="$CURRENT_APP/node_modules"   R2_ENDPOINT_URL="$R2_ENDPOINT_URL"   R2_BUCKET_NAME="$R2_BUCKET_NAME"   R2_READ_ONLY_ACCESS_KEY_ID="$r2_id"   R2_READ_ONLY_SECRET_ACCESS_KEY="$r2_secret"   TAILS_QUALIFICATION_ONLY=true   TAILS_QUAL_MAX_TOKENS="$MAX_TOKENS"   TAILS_QUAL_CONCURRENCY="$CONCURRENCY"   TAILS_QUAL_MAX_REQUESTS="$REQUEST_BUDGET"   "$NODE_BIN" "$QUAL_DIR/scripts/tails-resource-qualification.js"   >"$RESULT_FILE" 2>&1
 qual_rc=$?
 set -e
-unset r2_id r2_secret
-
 printf 'QUALIFICATION_RC=%s\n' "$qual_rc"
 tail -n 20 "$RESULT_FILE"
 
