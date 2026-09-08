@@ -5,43 +5,27 @@ const assert = require('node:assert/strict');
 const {
     previousUtcBoundary,
     buildCohort,
+    resolveLiveCohort,
     selectQualificationCohort,
+    parseKlinePayload,
     buildSuffixSum,
+    buildPayload,
     runTailsProducer,
 } = require('../lib/tails-producer');
 
 const NOW = Date.parse('2026-09-08T06:00:00Z');
 const BOUNDARY = previousUtcBoundary(NOW);
 
-function marketPayload() {
-    return JSON.stringify({
-        data: [
-            { i: 'A', st: 'ALPHA' },
-            { i: 'B', st: 'ALPHA' },
-            { i: 'C', st: 'SPOT' },
-        ],
-    });
-}
-
-function createS3Mock() {
-    const calls = [];
+function token(alphaId, chainId, contractAddress, extra = {}) {
     return {
-        calls,
-        async send(command) {
-            const name = command && command.constructor && command.constructor.name;
-            calls.push(name);
-            if (name === 'GetObjectCommand') {
-                return {
-                    ETag: '"market-etag"',
-                    Body: {
-                        async transformToString() {
-                            return marketPayload();
-                        },
-                    },
-                };
-            }
-            throw new Error('unexpected-s3-command:' + name);
-        },
+        alphaId,
+        symbol: alphaId,
+        chainId,
+        contractAddress,
+        volume24h: 100,
+        offline: false,
+        listingCex: false,
+        ...extra,
     };
 }
 
@@ -57,9 +41,12 @@ function createHttpMock() {
                     data: {
                         success: true,
                         data: [
-                            { alphaId: 'A', symbol: 'AAA', chainId: 56, contractAddress: '0xAAA', volume24h: 100 },
-                            { alphaId: 'B', symbol: 'BBB', chainId: 'CT_501', contractAddress: 'CaseSensitive', volume24h: 90 },
-                            { alphaId: 'C', symbol: 'CCC', chainId: 56, contractAddress: '0xCCC', volume24h: 80 },
+                            token('A', 56, '0xA'),
+                            token('B', 'CT_501', 'CaseSensitive'),
+                            token('C', 56, '0xC'),
+                            token('D', 56, '0xD', { offline: true }),
+                            token('E', 56, '0xE', { offline: true }),
+                            token('S', 56, '0xS', { offline: true, listingCex: true }),
                         ],
                     },
                 };
@@ -67,11 +54,56 @@ function createHttpMock() {
 
             const parsed = new URL(url);
             const dataType = parsed.searchParams.get('dataType');
-            const tokenAddress = parsed.searchParams.get('tokenAddress');
-            const volume = dataType === 'limit' ? 4 : tokenAddress === 'CaseSensitive' ? 7 : 10;
+            const interval = parsed.searchParams.get('interval');
+            const addr = parsed.searchParams.get('tokenAddress');
+
+            if (interval === '1d' && dataType === 'limit') {
+                if (addr === '0xd') {
+                    return {
+                        status: 200,
+                        data: {
+                            code: '-5101',
+                            message: 'current token not support limit data source',
+                            data: null,
+                        },
+                    };
+                }
+                if (addr === '0xe') {
+                    return {
+                        status: 200,
+                        data: {
+                            code: '000000',
+                            data: {
+                                klineInfos: [
+                                    [BOUNDARY.startMs - 86400000, 0, 0, 0, 0, 0],
+                                    [BOUNDARY.startMs, 0, 0, 0, 0, 7],
+                                ],
+                            },
+                        },
+                    };
+                }
+            }
+
+            if (interval === '1m' && dataType === 'limit' && addr === '0xc') {
+                return {
+                    status: 200,
+                    data: {
+                        code: '-5101',
+                        message: 'current token not support limit data source',
+                        data: null,
+                    },
+                };
+            }
+
+            const volume = dataType === 'limit'
+                ? 4
+                : addr === 'CaseSensitive'
+                    ? 7
+                    : 10;
             return {
                 status: 200,
                 data: {
+                    code: '000000',
                     data: {
                         klineInfos: [[BOUNDARY.startMs, 0, 0, 0, 0, volume]],
                     },
@@ -87,72 +119,47 @@ test('previous UTC boundary is exact to the millisecond', () => {
     assert.equal(BOUNDARY.windowEnd, '2026-09-07T23:59:59.999Z');
 });
 
-test('current online Binance row is accepted even when stale cache has no status', () => {
-    const raw = [
-        { alphaId: 'A', chainId: 56, contractAddress: '0xA', offline: false },
-        { alphaId: 'B', chainId: 56, contractAddress: '0xB', offline: false },
-    ];
-    const statuses = new Map([['A', 'ALPHA']]);
-    const cohort = buildCohort(raw, statuses);
-    assert.deepEqual(cohort.map(x => x.alphaId), ['A', 'B']);
-    assert.equal(cohort[1].statusSource, 'binance-live');
-    assert.equal(cohort.diagnostics.liveOnlineAcceptedWithoutCache, 1);
-});
-
-test('offline non-CEX row without canonical cache status still fails closed', () => {
-    const raw = [
-        {
-            alphaId: 'B',
-            chainId: 56,
-            contractAddress: '0xB',
-            offline: true,
-            listingCex: false,
-        },
-    ];
-    const statuses = new Map();
-    assert.throws(
-        () => buildCohort(raw, statuses),
-        /market-status-ambiguous-offline:1/,
-    );
-});
-
-test('offline listing-CEX row is excluded without requiring stale cache status', () => {
-    const raw = [
-        {
-            alphaId: 'S',
-            chainId: 56,
-            contractAddress: '0xS',
-            offline: true,
-            listingCex: true,
-        },
-        {
-            alphaId: 'A',
-            chainId: 56,
-            contractAddress: '0xA',
-            offline: false,
-        },
-    ];
-    const cohort = buildCohort(raw, new Map());
+test('cohort uses live state and stages offline non-CEX rows for requalification', () => {
+    const cohort = buildCohort([
+        token('A', 56, '0xA'),
+        token('D', 56, '0xD', { offline: true }),
+        token('S', 56, '0xS', { offline: true, listingCex: true }),
+    ]);
     assert.deepEqual(cohort.map(x => x.alphaId), ['A']);
+    assert.equal(cohort.diagnostics.offlineProbe.length, 1);
+    assert.equal(cohort.diagnostics.offlineProbe[0].alphaId, 'D');
+    assert.equal(cohort.diagnostics.excludedSpot, 1);
 });
 
-test('current online Binance row overrides a stale cached SPOT classification', () => {
-    const raw = [
-        {
-            alphaId: 'C',
-            chainId: 56,
-            contractAddress: '0xC',
-            offline: false,
-            listingCex: false,
-        },
-    ];
-    const statuses = new Map([['C', 'SPOT']]);
-    const cohort = buildCohort(raw, statuses);
-    assert.deepEqual(cohort.map(x => x.alphaId), ['C']);
-    assert.equal(cohort[0].statusSource, 'binance-live+cache');
+test('offline liveness requalification excludes -5101 and revives positive recent limit volume', async () => {
+    const http = createHttpMock();
+    const cohort = await resolveLiveCohort(http, [
+        token('A', 56, '0xA'),
+        token('D', 56, '0xD', { offline: true }),
+        token('E', 56, '0xE', { offline: true }),
+    ], {
+        concurrency: 2,
+        maxRequests: 20,
+    });
+
+    assert.deepEqual(cohort.map(x => x.alphaId), ['A', 'E']);
+    assert.equal(cohort.diagnostics.online, 1);
+    assert.equal(cohort.diagnostics.offlineProbed, 2);
+    assert.equal(cohort.diagnostics.offlineRevived, 1);
+    assert.equal(cohort.diagnostics.offlineExcluded, 1);
+    assert.equal(cohort.diagnostics.offlineUnsupported, 1);
 });
 
-test('qualification sampling exercises BSC limit and non-BSC paths', () => {
+test('kline -5101 is explicit unsupported capability, not missing zero', () => {
+    const parsed = parseKlinePayload({
+        code: '-5101',
+        message: 'current token not support limit data source',
+    }, 'ALPHA_994', 'limit');
+    assert.equal(parsed.capability, 'unsupported');
+    assert.deepEqual(parsed.rows, []);
+});
+
+test('qualification sampling exercises BSC and non-BSC paths', () => {
     const cohort = [
         { alphaId: 'A', chainId: '56' },
         { alphaId: 'B', chainId: 'CT_501' },
@@ -175,33 +182,62 @@ test('suffix sum preserves a real zero and exact 1440-point shape', () => {
     assert.equal(series[2], 0);
 });
 
-test('qualification-only producer performs no R2 mutation', async () => {
-    const s3 = createS3Mock();
+test('explicit successful empty kline response may produce a zero tail, but missing rows may not', () => {
+    const explicit = buildSuffixSum([], BOUNDARY.boundaryDate, { allowExplicitEmpty: true });
+    assert.equal(explicit.length, 1440);
+    assert.equal(explicit.every(v => v === 0), true);
+    assert.equal(buildSuffixSum([], BOUNDARY.boundaryDate), null);
+});
+
+test('payload partitions BSC limit capability into supported and unsupported sets', () => {
+    const cohort = [
+        { alphaId: 'A', chainId: '56' },
+        { alphaId: 'B', chainId: 'CT_501' },
+        { alphaId: 'C', chainId: '56' },
+    ];
+    const tails = [
+        { id: 'A', total: Array(1440).fill(10), limitApplicable: true, limitSupported: true, limit: Array(1440).fill(4) },
+        { id: 'B', total: Array(1440).fill(7), limitApplicable: false, limitSupported: false, limit: null },
+        { id: 'C', total: Array(1440).fill(9), limitApplicable: true, limitSupported: false, limit: null },
+    ];
+    const payload = buildPayload(BOUNDARY, cohort, tails, NOW);
+    assert.equal(payload.limit_applicable_token_count, 2);
+    assert.equal(payload.classified_limit_token_count, 2);
+    assert.equal(payload.expected_limit_token_count, 1);
+    assert.equal(payload.unsupported_limit_token_count, 1);
+    assert.deepEqual(payload.unsupported_limit_ids, ['C']);
+    assert.deepEqual(Object.keys(payload.limit), ['A']);
+});
+
+test('qualification-only producer is Binance-only and performs no R2 mutation', async () => {
     const http = createHttpMock();
 
     const result = await runTailsProducer({
         http,
-        s3Client: s3,
-        bucket: 'wave-alpha-data',
         nowMs: NOW,
         qualificationOnly: true,
-        maxTokens: 2,
+        maxTokens: 0,
         concurrency: 2,
-        maxRequests: 20,
+        maxRequests: 30,
         logger: { log() {} },
     });
 
     assert.equal(result.qualificationOnly, true);
-    assert.equal(result.fullCohortCount, 3);
-    assert.equal(result.liveOnlineAcceptedWithoutCache, 0);
-    assert.equal(result.selectedCohortCount, 2);
-    assert.equal(result.selectedBscCount, 1);
+    assert.equal(result.fullCohortCount, 4);
+    assert.equal(result.onlineCount, 3);
+    assert.equal(result.offlineProbedCount, 2);
+    assert.equal(result.offlineRevivedCount, 1);
+    assert.equal(result.offlineExcludedCount, 1);
+    assert.equal(result.selectedCohortCount, 4);
+    assert.equal(result.selectedBscCount, 3);
+    assert.equal(result.supportedLimitCount, 2);
+    assert.equal(result.unsupportedLimitCount, 1);
     assert.equal(result.publication, null);
-    assert.equal(result.http.requests, 4);
-    assert.deepEqual(s3.calls, ['GetObjectCommand']);
+    assert.equal(result.http.requests, 10);
     assert.equal(result.http.byKind['bulk-total'], 1);
-    assert.equal(result.http.byKind['kline-aggregate'], 2);
-    assert.equal(result.http.byKind['kline-limit'], 1);
+    assert.equal(result.http.byKind['offline-liveness-limit'], 2);
+    assert.equal(result.http.byKind['kline-aggregate'], 4);
+    assert.equal(result.http.byKind['kline-limit'], 3);
 });
 
 test('write mode is blocked unless explicit production-write authorization exists', async () => {
@@ -211,9 +247,6 @@ test('write mode is blocked unless explicit production-write authorization exist
         await assert.rejects(
             runTailsProducer({
                 http: createHttpMock(),
-                s3Client: createS3Mock(),
-                bucket: 'wave-alpha-data',
-                nowMs: NOW,
                 qualificationOnly: false,
             }),
             /production-write-not-authorized/,
