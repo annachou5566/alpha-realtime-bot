@@ -29,7 +29,10 @@ async function main() {
         return;
     }
 
-    const maxTokens = envInt('TAILS_QUAL_MAX_TOKENS', 24, 4, 64);
+    const rawMaxTokens = Number.parseInt(process.env.TAILS_QUAL_MAX_TOKENS || '24', 10);
+    const maxTokens = Number.isFinite(rawMaxTokens) && rawMaxTokens === 0
+        ? 0
+        : Math.min(64, Math.max(4, Number.isFinite(rawMaxTokens) ? rawMaxTokens : 24));
     const concurrency = envInt('TAILS_QUAL_CONCURRENCY', 2, 1, 4);
     const maxRequests = envInt('TAILS_QUAL_MAX_REQUESTS', 320, 40, 1200);
 
