@@ -22,7 +22,7 @@ async function main() {
         ? 0
         : Math.min(64, Math.max(4, Number.isFinite(rawMaxTokens) ? rawMaxTokens : 24));
     const concurrency = envInt('TAILS_QUAL_CONCURRENCY', 2, 1, 4);
-    const maxRequests = envInt('TAILS_QUAL_MAX_REQUESTS', 320, 40, 1200);
+    const maxRequests = envInt('TAILS_QUAL_MAX_REQUESTS', 320, 40, 2000);
 
     const startHr = process.hrtime.bigint();
     const startCpu = process.cpuUsage();
