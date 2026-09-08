@@ -125,6 +125,60 @@ function createHttpMock() {
     };
 }
 
+test('non-EVM case-sensitive contract address is preserved for Binance kline requests', async () => {
+    const calls = [];
+    const http = {
+        async get(url) {
+            calls.push(url);
+            const parsed = new URL(url);
+            if (parsed.pathname.includes('aggTicker24')) {
+                return {
+                    status: 200,
+                    data: {
+                        success: true,
+                        data: [
+                            token(
+                                'ALPHA_271',
+                                'CT_195',
+                                'TXL6rJbvmjD46zeN1JssfgxvSo99qC8MRT',
+                            ),
+                        ],
+                    },
+                };
+            }
+
+            assert.equal(
+                parsed.searchParams.get('tokenAddress'),
+                'TXL6rJbvmjD46zeN1JssfgxvSo99qC8MRT',
+            );
+            return {
+                status: 200,
+                data: {
+                    code: '000000',
+                    success: true,
+                    data: {
+                        klineInfos: [[BOUNDARY.startMs, 0, 0, 0, 0, 1]],
+                    },
+                },
+            };
+        },
+    };
+
+    const result = await runTailsProducer({
+        http,
+        nowMs: NOW,
+        qualificationOnly: true,
+        maxTokens: 0,
+        concurrency: 1,
+        maxRequests: 10,
+        logger: { log() {} },
+    });
+
+    assert.equal(result.fullCohortCount, 1);
+    assert.equal(result.http.byKind['kline-aggregate'], 1);
+    assert.equal(calls.length, 2);
+});
+
 test('previous UTC boundary is exact to the millisecond', () => {
     assert.equal(BOUNDARY.boundaryDate, '2026-09-07');
     assert.equal(BOUNDARY.windowStart, '2026-09-07T00:00:00.000Z');
