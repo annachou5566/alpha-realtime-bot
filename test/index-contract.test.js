@@ -19,6 +19,12 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.ok(source.includes('syncBaseData({ force: true })'));
     assert.match(source, /HeadObjectCommand/);
     assert.match(source, /Tails Cache unchanged; skipped 24 MB body download/);
+    assert.match(source, /validateTailsHead\(head, Date\.now\(\)\)/);
+    assert.match(source, /validateTailsPayload\(data, Date\.now\(\)\)/);
+    assert.match(source, /TAILS_CACHE_STATE/);
+    assert.match(source, /currentTailValue\(/);
+    assert.doesNotMatch(source, /SNAPSHOT_TAIL_TOTAL\[id\]\?\.\[currentMinute\]\s*\|\|\s*0/);
+    assert.doesNotMatch(source, /SNAPSHOT_TAIL_LIMIT\[id\]\?\.\[currentMinute\]\s*\|\|\s*0/);
     assert.match(source, /let SPOT_TICKER_SHOULD_RUN = false/);
     assert.match(source, /let SPOT_TICKER_LAST_REQUEST_AT = 0/);
     assert.match(source, /Demand-driven; waiting for \/api\/spot-tickers/);
