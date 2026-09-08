@@ -283,6 +283,7 @@ let BASE_DATA_ETAG = '';
 let START_OFFSET_CACHE = {}; 
 let SNAPSHOT_TAIL_TOTAL = {};
 let SNAPSHOT_TAIL_LIMIT = {};
+let SNAPSHOT_TAIL_LIMIT_UNSUPPORTED = new Set();
 let TAILS_CACHE_ETAG = '';
 let TAILS_CACHE_STATE = {
     available: false,
@@ -975,6 +976,7 @@ async function syncTailsFromR2(options = {}) {
     const markUnavailable = (reason, etag = TAILS_CACHE_ETAG) => {
         SNAPSHOT_TAIL_TOTAL = {};
         SNAPSHOT_TAIL_LIMIT = {};
+        SNAPSHOT_TAIL_LIMIT_UNSUPPORTED = new Set();
         TAILS_CACHE_ETAG = String(etag || '');
         TAILS_CACHE_STATE = {
             available: false,
@@ -1048,6 +1050,7 @@ async function syncTailsFromR2(options = {}) {
 
         SNAPSHOT_TAIL_TOTAL = data.total;
         SNAPSHOT_TAIL_LIMIT = data.limit;
+        SNAPSHOT_TAIL_LIMIT_UNSUPPORTED = new Set(payloadContract.unsupportedLimitIds || []);
         TAILS_CACHE_ETAG = String(resp && resp.ETag || nextEtag || '');
         TAILS_CACHE_STATE = {
             available: true,
@@ -1150,6 +1153,7 @@ setInterval(() => {
         
         SNAPSHOT_TAIL_TOTAL = {};
         SNAPSHOT_TAIL_LIMIT = {};
+        SNAPSHOT_TAIL_LIMIT_UNSUPPORTED = new Set();
         TAILS_CACHE_STATE = {
             available: false,
             boundaryDate: null,
@@ -1416,8 +1420,10 @@ async function loopRealtime() {
                 const id = t.alphaId;
                 if (!id) continue; // [FIX] return làm thoát luôn cả vòng loopRealtime() ở token đầu tiên thiếu alphaId
                 
-                let rollVolTot = parseFloat(t.volume24h || 0);
-                let rollVolLim = limitMap[id] || 0;
+                let rollVolTot = finiteNumberOrNull(t.volume24h);
+                let rollVolLim = Object.prototype.hasOwnProperty.call(limitMap, id)
+                    ? finiteNumberOrNull(limitMap[id])
+                    : null;
                 let currentPrice = parseFloat(t.price || 0);
                 let currentTx = limitTxMap[id] || 0;
 
@@ -1428,18 +1434,28 @@ async function loopRealtime() {
                     currentMinute,
                     currentTs,
                 );
-                const tailLim = currentTailValue(
-                    TAILS_CACHE_STATE,
-                    SNAPSHOT_TAIL_LIMIT,
-                    id,
-                    currentMinute,
-                    currentTs,
+                const limitExplicitlyUnsupported = (
+                    TAILS_CACHE_STATE.available === true
+                    && SNAPSHOT_TAIL_LIMIT_UNSUPPORTED.has(String(id))
                 );
+                const tailLim = limitExplicitlyUnsupported
+                    ? null
+                    : currentTailValue(
+                        TAILS_CACHE_STATE,
+                        SNAPSHOT_TAIL_LIMIT,
+                        id,
+                        currentMinute,
+                        currentTs,
+                    );
 
-                let dailyTot = tailTot === null
+                let dailyTot = tailTot === null || rollVolTot === null
                     ? null
                     : Math.max(0, rollVolTot - tailTot);
-                let dailyLim = tailLim === null
+                let dailyLim = (
+                    limitExplicitlyUnsupported
+                    || tailLim === null
+                    || rollVolLim === null
+                )
                     ? null
                     : Math.max(0, rollVolLim - tailLim);
                 if (dailyTot !== null && dailyLim !== null && dailyTot < dailyLim) {
