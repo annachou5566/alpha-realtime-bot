@@ -8,7 +8,15 @@ const { promisify } = require('util');
 const gzipAsync   = promisify(zlib.gzip);
 const gunzipAsync = promisify(zlib.gunzip);
 const { createClient } = require('@supabase/supabase-js');
-const https = require('https'); 
+const https = require('https');
+const crypto = require('node:crypto');
+const {
+    expectedTailBoundaryDate,
+    validateTailsHead,
+    validateTailsPayload,
+    currentTailValue,
+    finiteNumberOrNull,
+} = require('./lib/tails-cache-contract');
 const {
     buildViewBoundaries,
     buildTournamentBoundaries,
@@ -273,9 +281,15 @@ let HISTORY_CACHE = {};
 let BASE_HISTORY_DATA = {};  
 let BASE_DATA_ETAG = '';
 let START_OFFSET_CACHE = {}; 
-let SNAPSHOT_TAIL_TOTAL = {}; 
-let SNAPSHOT_TAIL_LIMIT = {}; 
+let SNAPSHOT_TAIL_TOTAL = {};
+let SNAPSHOT_TAIL_LIMIT = {};
 let TAILS_CACHE_ETAG = '';
+let TAILS_CACHE_STATE = {
+    available: false,
+    boundaryDate: null,
+    generatedAt: null,
+    error: 'not-loaded',
+};
 let ACTIVE_TOKEN_LIST = [];  
 
 let TOKEN_METRICS_HISTORY = {}; 
@@ -957,43 +971,128 @@ async function checkStartOffsets() {
 async function syncTailsFromR2(options = {}) {
     const force = options.force === true;
     const key = 'tails_cache.json';
+
+    const markUnavailable = (reason, etag = TAILS_CACHE_ETAG) => {
+        SNAPSHOT_TAIL_TOTAL = {};
+        SNAPSHOT_TAIL_LIMIT = {};
+        TAILS_CACHE_ETAG = String(etag || '');
+        TAILS_CACHE_STATE = {
+            available: false,
+            boundaryDate: null,
+            generatedAt: null,
+            error: String(reason || 'unavailable'),
+        };
+    };
+
     try {
-        if (!force && TAILS_CACHE_ETAG) {
-            const head = await s3Client.send(new HeadObjectCommand({
-                Bucket: process.env.R2_BUCKET_NAME,
-                Key: key,
-            }));
-            const nextEtag = String(head && head.ETag || '');
-            if (nextEtag && nextEtag === TAILS_CACHE_ETAG) {
-                console.log('🦊 Tails Cache unchanged; skipped 24 MB body download.');
-                return { changed: false, etag: nextEtag };
+        // HEAD is always checked first. Metadata proves schema + exact UTC boundary
+        // before the 24 MB body is downloaded.
+        const head = await s3Client.send(new HeadObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+        }));
+        const nextEtag = String(head && head.ETag || '');
+        const headContract = validateTailsHead(head, Date.now());
+
+        if (!headContract.ok) {
+            markUnavailable(`head:${headContract.reason}`, nextEtag);
+            console.warn(
+                `⚠️ Tails Cache unavailable: ${headContract.reason}; ` +
+                `expected boundary ${headContract.expectedBoundary}.`
+            );
+            return {
+                changed: false,
+                available: false,
+                reason: headContract.reason,
+                etag: nextEtag,
+            };
+        }
+
+        if (
+            !force
+            && TAILS_CACHE_STATE.available === true
+            && TAILS_CACHE_STATE.boundaryDate === headContract.expectedBoundary
+            && TAILS_CACHE_ETAG
+            && nextEtag
+            && nextEtag === TAILS_CACHE_ETAG
+        ) {
+            console.log('🦊 Tails Cache unchanged; skipped 24 MB body download.');
+            return {
+                changed: false,
+                available: true,
+                etag: nextEtag,
+                boundaryDate: TAILS_CACHE_STATE.boundaryDate,
+            };
+        }
+
+        const cmd = new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+        });
+        const resp = await s3Client.send(cmd);
+        const str = await resp.Body.transformToString();
+        const payloadSha256 = crypto
+            .createHash('sha256')
+            .update(str, 'utf8')
+            .digest('hex');
+
+        if (payloadSha256 !== headContract.payloadSha256) {
+            throw new Error('payload-sha256-mismatch');
+        }
+
+        const data = JSON.parse(str);
+        const payloadContract = validateTailsPayload(data, Date.now());
+        if (!payloadContract.ok) {
+            throw new Error(`payload-contract:${payloadContract.reason}`);
+        }
+
+        SNAPSHOT_TAIL_TOTAL = data.total;
+        SNAPSHOT_TAIL_LIMIT = data.limit;
+        TAILS_CACHE_ETAG = String(resp && resp.ETag || nextEtag || '');
+        TAILS_CACHE_STATE = {
+            available: true,
+            boundaryDate: payloadContract.boundary,
+            generatedAt: payloadContract.generatedAt,
+            error: null,
+        };
+
+        if (MARKET_VOL_HISTORY.length === 0) {
+            let calcDaily = 0;
+            let complete = true;
+            Object.keys(SNAPSHOT_TAIL_TOTAL).forEach(id => {
+                const value = finiteNumberOrNull(SNAPSHOT_TAIL_TOTAL[id] && SNAPSHOT_TAIL_TOTAL[id][0]);
+                if (value === null) {
+                    complete = false;
+                    return;
+                }
+                calcDaily += value;
+            });
+            if (complete && calcDaily > 0) {
+                MARKET_VOL_HISTORY.push({
+                    date: payloadContract.boundary,
+                    daily: calcDaily,
+                    rolling: calcDaily,
+                });
             }
         }
 
-        const cmd = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key });
-        const resp = await s3Client.send(cmd);
-        const str = await resp.Body.transformToString();
-        const data = JSON.parse(str);
-        TAILS_CACHE_ETAG = String(resp && resp.ETag || TAILS_CACHE_ETAG || '');
-        
-        if (data.total) SNAPSHOT_TAIL_TOTAL = data.total;
-        if (data.limit) SNAPSHOT_TAIL_LIMIT = data.limit;
-        
-        if (MARKET_VOL_HISTORY.length === 0) {
-            let calcDaily = 0;
-            Object.keys(SNAPSHOT_TAIL_TOTAL).forEach(id => {
-                calcDaily += (SNAPSHOT_TAIL_TOTAL[id][0] || 0); 
-            });
-            if (calcDaily > 0) {
-                let yStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-                MARKET_VOL_HISTORY.push({ date: yStr, daily: calcDaily, rolling: calcDaily });
-            }
-        }
-        console.log(`🦊 Đã tải Tails Cache từ R2.`);
-        return { changed: true, etag: TAILS_CACHE_ETAG };
+        console.log(
+            `🦊 Đã tải Tails Cache v2: boundary=${TAILS_CACHE_STATE.boundaryDate}.`
+        );
+        return {
+            changed: true,
+            available: true,
+            etag: TAILS_CACHE_ETAG,
+            boundaryDate: TAILS_CACHE_STATE.boundaryDate,
+        };
     } catch (e) {
-        console.error("⚠️ Chưa tải được Tails Cache.", e.message);
-        return { changed: false, error: e.message };
+        markUnavailable(e && e.message || 'load-failed');
+        console.error('⚠️ Tails Cache unavailable.', e.message);
+        return {
+            changed: false,
+            available: false,
+            error: e.message,
+        };
     }
 }
 
@@ -1049,10 +1148,16 @@ setInterval(() => {
         MARKET_VOL_HISTORY.push({ date: yStr, daily: totalDaily, rolling: totalDaily });
         if (MARKET_VOL_HISTORY.length > 14) MARKET_VOL_HISTORY.shift(); 
         
-        SNAPSHOT_TAIL_TOTAL = {}; 
+        SNAPSHOT_TAIL_TOTAL = {};
         SNAPSHOT_TAIL_LIMIT = {};
-        
-        console.log("🕛 Đã qua ngày mới! Cập nhật 1 cây nến vào lịch sử thành công.");
+        TAILS_CACHE_STATE = {
+            available: false,
+            boundaryDate: null,
+            generatedAt: null,
+            error: 'utc-rollover',
+        };
+
+        console.log("🕛 Đã qua ngày mới! Tail cũ bị vô hiệu hóa cho tới khi boundary mới được xác thực.");
     }
 }, 60000);
 
@@ -1316,28 +1421,63 @@ async function loopRealtime() {
                 let currentPrice = parseFloat(t.price || 0);
                 let currentTx = limitTxMap[id] || 0;
 
-                const tailTot = SNAPSHOT_TAIL_TOTAL[id]?.[currentMinute] || 0;
-                const tailLim = SNAPSHOT_TAIL_LIMIT[id]?.[currentMinute] || 0;
+                const tailTot = currentTailValue(
+                    TAILS_CACHE_STATE,
+                    SNAPSHOT_TAIL_TOTAL,
+                    id,
+                    currentMinute,
+                    currentTs,
+                );
+                const tailLim = currentTailValue(
+                    TAILS_CACHE_STATE,
+                    SNAPSHOT_TAIL_LIMIT,
+                    id,
+                    currentMinute,
+                    currentTs,
+                );
 
-                let dailyTot = Math.max(0, rollVolTot - tailTot);
-                let dailyLim = Math.max(0, rollVolLim - tailLim);
-                if (dailyTot < dailyLim) dailyTot = dailyLim; 
+                let dailyTot = tailTot === null
+                    ? null
+                    : Math.max(0, rollVolTot - tailTot);
+                let dailyLim = tailLim === null
+                    ? null
+                    : Math.max(0, rollVolLim - tailLim);
+                if (dailyTot !== null && dailyLim !== null && dailyTot < dailyLim) {
+                    dailyTot = dailyLim;
+                }
 
                 if (ACTIVE_CONFIG[id] && ACTIVE_CONFIG[id].inputTokens && ACTIVE_CONFIG[id].inputTokens.length > 0) {
-                    const dbData = ACTIVE_CONFIG[id]; 
-                    
-                    dailyTot = parseFloat(dbData.real_alpha_volume || 0);
-                    dailyLim = parseFloat(dbData.limit_daily_volume || 0);
-                    currentTx = parseFloat(dbData.daily_tx_count || 0);
-                    rollVolTot = parseFloat(dbData.real_alpha_volume || 0);
+                    const dbData = ACTIVE_CONFIG[id];
 
-                    START_OFFSET_CACHE[id] = 0; 
-                    BASE_HISTORY_DATA[id] = {
-                        base_total_vol: parseFloat(dbData.total_accumulated_volume || 0) - dailyTot,
-                        base_limit_vol: parseFloat(dbData.limit_accumulated_volume || 0) - dailyLim,
-                        base_total_tx: parseFloat(dbData.tx_count || 0) - currentTx,
-                        base_limit_tx: parseFloat(dbData.limit_accumulated_tx || 0) - currentTx
-                    };
+                    const configDailyTot = finiteNumberOrNull(dbData.real_alpha_volume);
+                    const configDailyLim = finiteNumberOrNull(dbData.limit_daily_volume);
+                    const configDailyTx = finiteNumberOrNull(dbData.daily_tx_count);
+                    const configTotalAccumulated = finiteNumberOrNull(dbData.total_accumulated_volume);
+                    const configLimitAccumulated = finiteNumberOrNull(dbData.limit_accumulated_volume);
+                    const configTotalTx = finiteNumberOrNull(dbData.tx_count);
+                    const configLimitTx = finiteNumberOrNull(dbData.limit_accumulated_tx);
+
+                    dailyTot = configDailyTot;
+                    dailyLim = configDailyLim;
+                    if (configDailyTx !== null) currentTx = configDailyTx;
+                    if (configDailyTot !== null) rollVolTot = configDailyTot;
+
+                    START_OFFSET_CACHE[id] = 0;
+                    if (
+                        configTotalAccumulated !== null
+                        && configLimitAccumulated !== null
+                        && configTotalTx !== null
+                        && configLimitTx !== null
+                        && dailyTot !== null
+                        && dailyLim !== null
+                    ) {
+                        BASE_HISTORY_DATA[id] = {
+                            base_total_vol: configTotalAccumulated - dailyTot,
+                            base_limit_vol: configLimitAccumulated - dailyLim,
+                            base_total_tx: configTotalTx - currentTx,
+                            base_limit_tx: configLimitTx - currentTx
+                        };
+                    }
                 }
 
                 GLOBAL_MARKET[id] = {
