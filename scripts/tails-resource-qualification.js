@@ -67,6 +67,7 @@ async function main() {
             offlineProbedCount: result.offlineProbedCount,
             offlineRevivedCount: result.offlineRevivedCount,
             offlineExcludedCount: result.offlineExcludedCount,
+            offlineInvalidAddressCount: result.offlineInvalidAddressCount,
             supportedLimitCount: result.supportedLimitCount,
             unsupportedLimitCount: result.unsupportedLimitCount,
             payloadBytes: result.payloadBytes,
