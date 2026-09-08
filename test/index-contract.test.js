@@ -25,6 +25,10 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /currentTailValue\(/);
     assert.doesNotMatch(source, /SNAPSHOT_TAIL_TOTAL\[id\]\?\.\[currentMinute\]\s*\|\|\s*0/);
     assert.doesNotMatch(source, /SNAPSHOT_TAIL_LIMIT\[id\]\?\.\[currentMinute\]\s*\|\|\s*0/);
+    assert.doesNotMatch(source, /limitMap\[id\]\s*\|\|\s*0/);
+    assert.match(source, /SNAPSHOT_TAIL_LIMIT_UNSUPPORTED = new Set/);
+    assert.match(source, /payloadContract\.unsupportedLimitIds/);
+    assert.match(source, /limitExplicitlyUnsupported/);
     assert.match(source, /let SPOT_TICKER_SHOULD_RUN = false/);
     assert.match(source, /let SPOT_TICKER_LAST_REQUEST_AT = 0/);
     assert.match(source, /Demand-driven; waiting for \/api\/spot-tickers/);
