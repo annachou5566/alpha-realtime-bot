@@ -442,6 +442,28 @@ test('payload partitions BSC limit capability into supported and unsupported set
     assert.deepEqual(Object.keys(payload.limit), ['A']);
 });
 
+test('qualification-only producer can return the validated payload for local candidate emission', async () => {
+    const http = createHttpMock();
+
+    const result = await runTailsProducer({
+        http,
+        nowMs: NOW,
+        qualificationOnly: true,
+        includePayload: true,
+        maxTokens: 0,
+        concurrency: 2,
+        maxRequests: 40,
+        logger: { log() {} },
+    });
+
+    assert.equal(result.qualificationOnly, true);
+    assert.equal(result.publication, null);
+    assert.equal(result.payload.schema_version, 2);
+    assert.equal(result.payload.complete, true);
+    assert.equal(result.payload.boundary_date, BOUNDARY.boundaryDate);
+    assert.equal(result.payload.expected_token_count, result.fullCohortCount);
+});
+
 test('qualification-only producer is Binance-only and performs no R2 mutation', async () => {
     const http = createHttpMock();
 
