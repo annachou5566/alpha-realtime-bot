@@ -29,6 +29,7 @@ function goodHead() {
 
 function goodPayload() {
     const idsHash = stableIdsHash(['ALPHA_1']);
+    const emptyHash = stableIdsHash([]);
     return {
         schema_version: 2,
         boundary_date: BOUNDARY,
@@ -38,15 +39,41 @@ function goodPayload() {
         complete: true,
         expected_token_count: 1,
         covered_total_count: 1,
-        expected_limit_token_count: 1,
-        covered_limit_count: 1,
         expected_ids_hash: idsHash,
         covered_total_ids_hash: idsHash,
+
+        limit_applicable_token_count: 1,
+        classified_limit_token_count: 1,
+        limit_applicable_ids_hash: idsHash,
+        classified_limit_ids_hash: idsHash,
+
+        expected_limit_token_count: 1,
+        covered_limit_count: 1,
         expected_limit_ids_hash: idsHash,
         covered_limit_ids_hash: idsHash,
+
+        unsupported_limit_token_count: 0,
+        unsupported_limit_ids: [],
+        unsupported_limit_ids_hash: emptyHash,
+
         total: { ALPHA_1: Array(1440).fill(10) },
         limit: { ALPHA_1: Array(1440).fill(4) },
     };
+}
+
+function unsupportedPayload() {
+    const payload = goodPayload();
+    const idsHash = stableIdsHash(['ALPHA_1']);
+    const emptyHash = stableIdsHash([]);
+    payload.expected_limit_token_count = 0;
+    payload.covered_limit_count = 0;
+    payload.expected_limit_ids_hash = emptyHash;
+    payload.covered_limit_ids_hash = emptyHash;
+    payload.unsupported_limit_token_count = 1;
+    payload.unsupported_limit_ids = ['ALPHA_1'];
+    payload.unsupported_limit_ids_hash = idsHash;
+    payload.limit = {};
+    return payload;
 }
 
 test('UTC boundary is always previous UTC calendar day', () => {
@@ -103,6 +130,25 @@ test('payload contract requires exact window, key hashes, and coverage', () => {
     const malformedLimit = goodPayload();
     malformedLimit.limit.ALPHA_1 = Array(1439).fill(4);
     assert.equal(validateTailsPayload(malformedLimit, NOW).reason, 'limit-series-shape');
+});
+
+test('payload contract accepts explicit unsupported limit capability without fabricating a series', () => {
+    const result = validateTailsPayload(unsupportedPayload(), NOW);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.unsupportedLimitIds, ['ALPHA_1']);
+});
+
+test('payload contract rejects overlapping supported and unsupported limit capability', () => {
+    const payload = goodPayload();
+    payload.unsupported_limit_token_count = 1;
+    payload.unsupported_limit_ids = ['ALPHA_1'];
+    payload.unsupported_limit_ids_hash = stableIdsHash(['ALPHA_1']);
+    payload.limit_applicable_token_count = 2;
+    payload.classified_limit_token_count = 2;
+    payload.limit_applicable_ids_hash = stableIdsHash(['ALPHA_1', 'ALPHA_1']);
+    payload.classified_limit_ids_hash = stableIdsHash(['ALPHA_1', 'ALPHA_1']);
+    const result = validateTailsPayload(payload, NOW);
+    assert.equal(result.ok, false);
 });
 
 test('missing or stale tail is null, never zero', () => {
