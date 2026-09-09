@@ -79,3 +79,26 @@ test('tails launcher refuses inherited credentials before mapping dedicated writ
     assert.match(launcher, /R2_BUCKET_NAME mismatch/);
     assert.doesNotMatch(launcher, /set -x/);
 });
+
+
+test('shadow-to-live promotion source pins exact canonical metadata contract', () => {
+    const source = read('scripts/promote-tails-shadow-to-live.js');
+
+    for (const fragment of [
+        "const SHADOW_KEY = 'tails_cache.v2.candidate.json';",
+        "const LIVE_KEY = 'tails_cache.json';",
+        "'wa-schema': '2'",
+        "'boundary-date': contract.boundary",
+        "complete: 'true'",
+        "'payload-sha256': bodySha",
+        "validateTailsPayload(payload, Date.now())",
+        "validateTailsHeadForSource(postHead",
+        "ALPHA_TAILS_LIVE_PROMOTION=PASS",
+    ]) {
+        assert.ok(source.includes(fragment), `missing promotion contract fragment: ${fragment}`);
+    }
+
+    assert.doesNotMatch(source, /DeleteObjectCommand/);
+    assert.doesNotMatch(source, /CopyObjectCommand/);
+    assert.doesNotMatch(source, /tails_cache\.v2\.candidate\.json['"]\s*,\s*Body/);
+});
