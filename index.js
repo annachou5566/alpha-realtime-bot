@@ -13,6 +13,7 @@ const crypto = require('node:crypto');
 const {
     expectedTailBoundaryDate,
     validateTailsHead,
+    validateTailsHeadForSource,
     validateTailsPayload,
     currentTailValue,
     finiteNumberOrNull,
@@ -972,6 +973,9 @@ async function checkStartOffsets() {
 async function syncTailsFromR2(options = {}) {
     const force = options.force === true;
     const key = String(process.env.TAILS_CACHE_KEY || 'tails_cache.json');
+    const expectedPayloadSha256 = String(
+        process.env.TAILS_CACHE_EXPECTED_SHA256 || ''
+    ).trim().toLowerCase();
 
     const markUnavailable = (reason, etag = TAILS_CACHE_ETAG) => {
         SNAPSHOT_TAIL_TOTAL = {};
@@ -994,13 +998,18 @@ async function syncTailsFromR2(options = {}) {
             Key: key,
         }));
         const nextEtag = String(head && head.ETag || '');
-        const headContract = validateTailsHead(head, Date.now());
+        const headContract = validateTailsHeadForSource(head, {
+            nowMs: Date.now(),
+            key,
+            expectedPayloadSha256,
+        });
 
         if (!headContract.ok) {
             markUnavailable(`head:${headContract.reason}`, nextEtag);
             console.warn(
                 `⚠️ Tails Cache unavailable: ${headContract.reason}; ` +
-                `expected boundary ${headContract.expectedBoundary}.`
+                `expected boundary ${headContract.expectedBoundary}; ` +
+                `source=${headContract.sourceMode || 'unknown'}.`
             );
             return {
                 changed: false,
@@ -1080,7 +1089,9 @@ async function syncTailsFromR2(options = {}) {
         }
 
         console.log(
-            `🦊 Đã tải Tails Cache v2: boundary=${TAILS_CACHE_STATE.boundaryDate}.`
+            `🦊 Đã tải Tails Cache v2: boundary=${TAILS_CACHE_STATE.boundaryDate}; ` +
+            `source=${headContract.sourceMode || 'unknown'}; ` +
+            `metadata=${headContract.metadataValidated === true ? 'validated' : 'pinned-body'}.`
         );
         return {
             changed: true,
