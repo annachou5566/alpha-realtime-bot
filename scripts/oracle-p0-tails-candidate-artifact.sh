@@ -149,10 +149,11 @@ printf 'HEALTH_AFTER_HTTP=%s\n' "${health_after:-000}"
   printf 'CANDIDATE_GATE=FAIL reason=artifact_missing\n'
   exit 76
 }
-(
-  cd "$(dirname "$OUTPUT")"
-  sha256sum -c "$(basename "$OUTPUT.sha256")" >/dev/null
-)
+sudo -n -u wavealpha-alpha bash -lc '
+  set -Eeuo pipefail
+  cd "$1"
+  sha256sum -c "$2" >/dev/null
+' _ "$(dirname "$OUTPUT")" "$(basename "$OUTPUT.sha256")"
 printf 'LOCAL_ARTIFACT_HASH_GATE=PASS\n'
 
 [[ "$service_after" == active && "$health_after" == 200 ]] || {
