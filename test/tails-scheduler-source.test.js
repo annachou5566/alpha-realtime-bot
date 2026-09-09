@@ -20,8 +20,8 @@ test('tails writer service is isolated oneshot with dedicated credentials only',
         'Environment=TAILS_WRITER_MODE=production',
         'Environment=TAILS_PRODUCTION_WRITE=true',
         'Environment=R2_BUCKET_NAME=wave-alpha-data',
-        'LoadCredential=R2_TAILS_WRITE_ACCESS_KEY_ID:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_ACCESS_KEY_ID',
-        'LoadCredential=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_SECRET_ACCESS_KEY',
+        'LoadCredentialEncrypted=R2_TAILS_WRITE_ACCESS_KEY_ID:/etc/credstore.encrypted/wave-alpha-tails-r2-access-key-id.cred',
+        'LoadCredentialEncrypted=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/etc/credstore.encrypted/wave-alpha-tails-r2-secret-access-key.cred',
         'ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-tails-writer/current/scripts/oracle-tails-production-launch.sh',
     ]) {
         assert.ok(unit.split('\n').includes(line), `missing exact unit line: ${line}`);
@@ -115,4 +115,24 @@ test('writer release root is isolated from the production-readonly consumer rele
 
     assert.doesNotMatch(unit, /alpha-realtime\/current/);
     assert.doesNotMatch(launcher, /alpha-realtime\/current/);
+});
+
+
+test('timer has no eager service dependency and encrypted writer credentials survive reboot', () => {
+    const service = read('deploy/oracle/alpha-tails-production.service');
+    const timer = read('deploy/oracle/alpha-tails-production.timer');
+
+    assert.doesNotMatch(timer, /^Requires=alpha-tails-production\.service$/m);
+    assert.doesNotMatch(timer, /^Wants=alpha-tails-production\.service$/m);
+    assert.match(timer, /^Unit=alpha-tails-production\.service$/m);
+
+    assert.match(
+        service,
+        /^LoadCredentialEncrypted=R2_TAILS_WRITE_ACCESS_KEY_ID:\/etc\/credstore\.encrypted\/wave-alpha-tails-r2-access-key-id\.cred$/m,
+    );
+    assert.match(
+        service,
+        /^LoadCredentialEncrypted=R2_TAILS_WRITE_SECRET_ACCESS_KEY:\/etc\/credstore\.encrypted\/wave-alpha-tails-r2-secret-access-key\.cred$/m,
+    );
+    assert.doesNotMatch(service, /\/run\/wave-alpha-alpha\/credentials\/R2_TAILS_WRITE_/);
 });
