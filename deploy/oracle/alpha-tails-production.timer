@@ -1,7 +1,5 @@
 [Unit]
 Description=Wave Alpha tails v2 daily canonical scheduler
-Requires=alpha-tails-production.service
-
 [Timer]
 OnCalendar=*-*-* 00:15:00 UTC
 AccuracySec=1s
