@@ -22,7 +22,7 @@ Environment=WAVE_ALPHA_APP_DIR=/opt/wave-alpha/alpha-realtime/current
 LoadCredential=R2_TAILS_WRITE_ACCESS_KEY_ID:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_ACCESS_KEY_ID
 LoadCredential=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_SECRET_ACCESS_KEY
 
-ExecStart=/opt/wave-alpha/alpha-realtime/current/scripts/oracle-tails-production-launch.sh
+ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-realtime/current/scripts/oracle-tails-production-launch.sh
 
 TimeoutStartSec=20min
 TimeoutStopSec=20s
