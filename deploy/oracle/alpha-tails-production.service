@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 User=wavealpha-alpha
 Group=wavealpha-alpha
-WorkingDirectory=/opt/wave-alpha/alpha-realtime/current
+WorkingDirectory=/opt/wave-alpha/alpha-tails-writer/current
 
 Environment=NODE_OPTIONS=--max-old-space-size=256
 Environment=TAILS_WRITER_MODE=production
@@ -17,12 +17,12 @@ Environment=TAILS_PRODUCTION_MAX_REQUESTS=2000
 Environment=R2_ENDPOINT_URL=https://0f534c1b6f9bc097235b37c07d1dc32e.r2.cloudflarestorage.com
 Environment=R2_BUCKET_NAME=wave-alpha-data
 Environment=WAVE_ALPHA_NODE_BIN=/opt/wave-alpha/node/current/bin/node
-Environment=WAVE_ALPHA_APP_DIR=/opt/wave-alpha/alpha-realtime/current
+Environment=WAVE_ALPHA_APP_DIR=/opt/wave-alpha/alpha-tails-writer/current
 
 LoadCredential=R2_TAILS_WRITE_ACCESS_KEY_ID:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_ACCESS_KEY_ID
 LoadCredential=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_SECRET_ACCESS_KEY
 
-ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-realtime/current/scripts/oracle-tails-production-launch.sh
+ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-tails-writer/current/scripts/oracle-tails-production-launch.sh
 
 TimeoutStartSec=20min
 TimeoutStopSec=20s
