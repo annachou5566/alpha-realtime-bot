@@ -1,0 +1,13 @@
+[Unit]
+Description=Wave Alpha tails v2 daily canonical scheduler
+Requires=alpha-tails-production.service
+
+[Timer]
+OnCalendar=*-*-* 00:15:00 UTC
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=alpha-tails-production.service
+
+[Install]
+WantedBy=timers.target
