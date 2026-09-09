@@ -6,6 +6,7 @@ const {
     stableIdsHash,
     expectedTailBoundaryDate,
     validateTailsHead,
+    validateTailsHeadForSource,
     validateTailsPayload,
     currentTailValue,
     finiteNumberOrNull,
@@ -98,6 +99,53 @@ test('head contract rejects legacy, stale, and incomplete artifacts', () => {
     const incomplete = goodHead();
     incomplete.Metadata.complete = 'false';
     assert.equal(validateTailsHead(incomplete, NOW).reason, 'incomplete');
+});
+
+test('live key preserves strict metadata head contract', () => {
+    const result = validateTailsHeadForSource(goodHead(), {
+        nowMs: NOW,
+        key: 'tails_cache.json',
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.sourceMode, 'live-metadata');
+
+    const missingMetadata = { ContentLength: 123, Metadata: {} };
+    const failed = validateTailsHeadForSource(missingMetadata, {
+        nowMs: NOW,
+        key: 'tails_cache.json',
+    });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.reason, 'schema');
+});
+
+test('shadow key requires exact pinned body hash and may tolerate absent custom metadata', () => {
+    const missingMetadata = { ContentLength: 123, Metadata: {} };
+
+    const missingPin = validateTailsHeadForSource(missingMetadata, {
+        nowMs: NOW,
+        key: 'tails_cache.v2.candidate.json',
+    });
+    assert.equal(missingPin.ok, false);
+    assert.equal(missingPin.reason, 'pinned-payload-hash-required');
+
+    const pinned = validateTailsHeadForSource(missingMetadata, {
+        nowMs: NOW,
+        key: 'tails_cache.v2.candidate.json',
+        expectedPayloadSha256: HASH_A,
+    });
+    assert.equal(pinned.ok, true);
+    assert.equal(pinned.sourceMode, 'pinned-shadow');
+    assert.equal(pinned.metadataValidated, false);
+    assert.equal(pinned.payloadSha256, HASH_A);
+
+    const metadataMismatch = goodHead();
+    const mismatch = validateTailsHeadForSource(metadataMismatch, {
+        nowMs: NOW,
+        key: 'tails_cache.v2.candidate.json',
+        expectedPayloadSha256: 'b'.repeat(64),
+    });
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.reason, 'pinned-payload-hash-mismatch');
 });
 
 test('payload contract requires exact window, key hashes, and coverage', () => {
