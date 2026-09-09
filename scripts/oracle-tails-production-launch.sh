@@ -5,7 +5,7 @@ export USER="${USER:-$(id -un)}"
 umask 077
 
 NODE_BIN="${WAVE_ALPHA_NODE_BIN:-/opt/wave-alpha/node/current/bin/node}"
-APP_DIR="${WAVE_ALPHA_APP_DIR:-/opt/wave-alpha/alpha-realtime/current}"
+APP_DIR="${WAVE_ALPHA_APP_DIR:-/opt/wave-alpha/alpha-tails-writer/current}"
 CRED_DIR="${CREDENTIALS_DIRECTORY:-}"
 
 EXPECTED_ENDPOINT='https://0f534c1b6f9bc097235b37c07d1dc32e.r2.cloudflarestorage.com'
