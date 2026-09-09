@@ -971,7 +971,7 @@ async function checkStartOffsets() {
 // ==========================================
 async function syncTailsFromR2(options = {}) {
     const force = options.force === true;
-    const key = 'tails_cache.json';
+    const key = String(process.env.TAILS_CACHE_KEY || 'tails_cache.json');
 
     const markUnavailable = (reason, etag = TAILS_CACHE_ETAG) => {
         SNAPSHOT_TAIL_TOTAL = {};
