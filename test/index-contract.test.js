@@ -21,7 +21,9 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /Tails Cache unchanged; skipped 24 MB body download/);
     assert.ok(source.includes("process.env.TAILS_CACHE_KEY || 'tails_cache.json'"));
     assert.doesNotMatch(source, /const key = 'tails_cache\.v2\.candidate\.json'/);
-    assert.match(source, /validateTailsHead\(head, Date\.now\(\)\)/);
+    assert.match(source, /TAILS_CACHE_EXPECTED_SHA256/);
+    assert.match(source, /validateTailsHeadForSource\(head, \{/);
+    assert.match(source, /expectedPayloadSha256/);
     assert.match(source, /validateTailsPayload\(data, Date\.now\(\)\)/);
     assert.match(source, /TAILS_CACHE_STATE/);
     assert.match(source, /currentTailValue\(/);
