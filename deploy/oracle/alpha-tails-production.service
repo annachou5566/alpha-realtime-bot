@@ -19,8 +19,8 @@ Environment=R2_BUCKET_NAME=wave-alpha-data
 Environment=WAVE_ALPHA_NODE_BIN=/opt/wave-alpha/node/current/bin/node
 Environment=WAVE_ALPHA_APP_DIR=/opt/wave-alpha/alpha-tails-writer/current
 
-LoadCredential=R2_TAILS_WRITE_ACCESS_KEY_ID:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_ACCESS_KEY_ID
-LoadCredential=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_SECRET_ACCESS_KEY
+LoadCredentialEncrypted=R2_TAILS_WRITE_ACCESS_KEY_ID:/etc/credstore.encrypted/wave-alpha-tails-r2-access-key-id.cred
+LoadCredentialEncrypted=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/etc/credstore.encrypted/wave-alpha-tails-r2-secret-access-key.cred
 
 ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-tails-writer/current/scripts/oracle-tails-production-launch.sh
 
