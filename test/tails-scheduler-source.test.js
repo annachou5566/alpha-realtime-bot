@@ -14,37 +14,49 @@ function read(rel) {
 test('tails writer service is isolated oneshot with dedicated credentials only', () => {
     const unit = read('deploy/oracle/alpha-tails-production.service');
 
-    assert.match(unit, /^Type=oneshot$/m);
-    assert.match(unit, /^User=wavealpha-alpha$/m);
-    assert.match(unit, /^Environment=TAILS_WRITER_MODE=production$/m);
-    assert.match(unit, /^Environment=TAILS_PRODUCTION_WRITE=true$/m);
-    assert.match(unit, /^Environment=R2_BUCKET_NAME=wave-alpha-data$/m);
-    assert.match(
-        unit,
-        /^LoadCredential=R2_TAILS_WRITE_ACCESS_KEY_ID:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_ACCESS_KEY_ID$/m,
-    );
-    assert.match(
-        unit,
-        /^LoadCredential=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_SECRET_ACCESS_KEY$/m,
-    );
+    for (const line of [
+        'Type=oneshot',
+        'User=wavealpha-alpha',
+        'Environment=TAILS_WRITER_MODE=production',
+        'Environment=TAILS_PRODUCTION_WRITE=true',
+        'Environment=R2_BUCKET_NAME=wave-alpha-data',
+        'LoadCredential=R2_TAILS_WRITE_ACCESS_KEY_ID:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_ACCESS_KEY_ID',
+        'LoadCredential=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_SECRET_ACCESS_KEY',
+        'ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-realtime/current/scripts/oracle-tails-production-launch.sh',
+    ]) {
+        assert.ok(unit.split('\n').includes(line), `missing exact unit line: ${line}`);
+    }
+
     assert.doesNotMatch(unit, /SUPABASE_/);
     assert.doesNotMatch(unit, /PRODUCTION_READ_API_SECRET_KEY/);
-    assert.match(
-        unit,
-        /^ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-realtime/current/scripts/oracle-tails-production-launch.sh$/m,
+    assert.equal(
+        unit.split('\n').filter(line => line.startsWith('WantedBy=')).length,
+        0,
     );
-    assert.doesNotMatch(unit, /^WantedBy=/m);
 });
 
 test('tails scheduler preserves the old 00:15 UTC cadence and has one timer owner', () => {
     const timer = read('deploy/oracle/alpha-tails-production.timer');
 
-    assert.match(timer, /^OnCalendar=*-*-* 00:15:00 UTC$/m);
-    assert.match(timer, /^AccuracySec=1s$/m);
-    assert.match(timer, /^RandomizedDelaySec=0$/m);
-    assert.match(timer, /^Persistent=true$/m);
-    assert.match(timer, /^Unit=alpha-tails-production.service$/m);
-    assert.match(timer, /^WantedBy=timers.target$/m);
+    for (const line of [
+        'OnCalendar=*-*-* 00:15:00 UTC',
+        'AccuracySec=1s',
+        'RandomizedDelaySec=0',
+        'Persistent=true',
+        'Unit=alpha-tails-production.service',
+        'WantedBy=timers.target',
+    ]) {
+        assert.ok(timer.split('\n').includes(line), `missing exact timer line: ${line}`);
+    }
+
+    assert.equal(
+        timer.split('\n').filter(line => line.startsWith('OnCalendar=')).length,
+        1,
+    );
+    assert.equal(
+        timer.split('\n').filter(line => line.startsWith('Unit=alpha-tails-production.service')).length,
+        1,
+    );
 });
 
 test('tails launcher refuses inherited credentials before mapping dedicated writer credentials', () => {
