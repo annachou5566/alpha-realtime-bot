@@ -22,7 +22,7 @@ test('tails writer service is isolated oneshot with dedicated credentials only',
         'Environment=R2_BUCKET_NAME=wave-alpha-data',
         'LoadCredential=R2_TAILS_WRITE_ACCESS_KEY_ID:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_ACCESS_KEY_ID',
         'LoadCredential=R2_TAILS_WRITE_SECRET_ACCESS_KEY:/run/wave-alpha-alpha/credentials/R2_TAILS_WRITE_SECRET_ACCESS_KEY',
-        'ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-realtime/current/scripts/oracle-tails-production-launch.sh',
+        'ExecStart=/usr/bin/bash /opt/wave-alpha/alpha-tails-writer/current/scripts/oracle-tails-production-launch.sh',
     ]) {
         assert.ok(unit.split('\n').includes(line), `missing exact unit line: ${line}`);
     }
@@ -101,4 +101,18 @@ test('shadow-to-live promotion source pins exact canonical metadata contract', (
     assert.doesNotMatch(source, /DeleteObjectCommand/);
     assert.doesNotMatch(source, /CopyObjectCommand/);
     assert.doesNotMatch(source, /tails_cache\.v2\.candidate\.json['"]\s*,\s*Body/);
+});
+
+
+test('writer release root is isolated from the production-readonly consumer release', () => {
+    const unit = read('deploy/oracle/alpha-tails-production.service');
+    const launcher = read('scripts/oracle-tails-production-launch.sh');
+
+    assert.match(unit, /WorkingDirectory=\/opt\/wave-alpha\/alpha-tails-writer\/current/);
+    assert.match(unit, /WAVE_ALPHA_APP_DIR=\/opt\/wave-alpha\/alpha-tails-writer\/current/);
+    assert.match(unit, /ExecStart=\/usr\/bin\/bash \/opt\/wave-alpha\/alpha-tails-writer\/current\/scripts\/oracle-tails-production-launch\.sh/);
+    assert.match(launcher, /\/opt\/wave-alpha\/alpha-tails-writer\/current/);
+
+    assert.doesNotMatch(unit, /alpha-realtime\/current/);
+    assert.doesNotMatch(launcher, /alpha-realtime\/current/);
 });
