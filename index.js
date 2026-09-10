@@ -29,6 +29,9 @@ const {
     createCompetitionPriceSeriesPublisher,
 } = require('./lib/competition-price-series-publisher');
 const {
+    selectFreshAlphaTokenList,
+} = require('./lib/alpha-market-token-list');
+const {
     buildRoundSafeHistoryEntries,
 } = require('./lib/competition-history-response');
 
@@ -1443,9 +1446,10 @@ async function loopRealtime() {
             // response as the canonical browser token list. No extra Binance
             // request is added, and new alphaIds become visible within the
             // existing realtime poll interval instead of waiting up to 6 hours.
-            if (Array.isArray(resTot.data.data) && resTot.data.data.length > 0) {
-                BINANCE_TOKEN_LIST = resTot.data.data;
-            }
+            BINANCE_TOKEN_LIST = selectFreshAlphaTokenList(
+                BINANCE_TOKEN_LIST,
+                resTot.data.data,
+            );
 
             const now = new Date();
             const currentTs = now.getTime();
