@@ -1439,6 +1439,14 @@ async function loopRealtime() {
         }
 
         if (resTot.data?.success) {
+            // Alpha Market membership freshness: reuse the already-paid aggregate
+            // response as the canonical browser token list. No extra Binance
+            // request is added, and new alphaIds become visible within the
+            // existing realtime poll interval instead of waiting up to 6 hours.
+            if (Array.isArray(resTot.data.data) && resTot.data.data.length > 0) {
+                BINANCE_TOKEN_LIST = resTot.data.data;
+            }
+
             const now = new Date();
             const currentTs = now.getTime();
             const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
