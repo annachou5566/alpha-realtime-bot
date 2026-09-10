@@ -28,6 +28,9 @@ const {
 const {
     createCompetitionPriceSeriesPublisher,
 } = require('./lib/competition-price-series-publisher');
+const {
+    buildRoundSafeHistoryEntries,
+} = require('./lib/competition-history-response');
 
 const http = require('http');
 const WebSocket = require('ws'); // dùng cho Spot Ticker stream từ Binance
@@ -278,7 +281,8 @@ app.get('/api/bandwidth-stats', (req, res) => {
 // --- RAM CACHE ---
 let GLOBAL_MARKET = {}; 
 let ACTIVE_CONFIG = {};      
-let HISTORY_CACHE = {};      
+let HISTORY_CACHE = {};
+let TOURNAMENT_HISTORY_INDEX = {};
 let BASE_HISTORY_DATA = {};  
 let BASE_DATA_ETAG = '';
 let START_OFFSET_CACHE = {}; 
@@ -866,6 +870,7 @@ async function syncActiveConfig() {
         if (data) {
             BANDWIDTH.supabaseReadBytes += byteLength(data);
             const newActive = {};
+            const newHistoryByTournament = {};
             const newTokens = [];
             data.forEach(row => {
                 const meta = row.data || {};
@@ -893,6 +898,16 @@ async function syncActiveConfig() {
                         newActive[meta.alphaId] = { ...meta, db_id: row.id };
                         if (!newTokens.includes(meta.alphaId)) newTokens.push(meta.alphaId);
                     } else {
+                        const roundEntry = {
+                            ...meta,
+                            name: meta.name || row.name,
+                            db_id: row.id,
+                        };
+                        newHistoryByTournament[String(row.id)] = roundEntry;
+
+                        // Preserve the legacy alphaId-keyed R2 cache for compatibility.
+                        // Do not use it as the API's primary History index because alphaId
+                        // is reused across tournament rounds (R1/R2/P1/P2).
                         if (HISTORY_CACHE[meta.alphaId]) {
                             if (meta.history) {
                                 HISTORY_CACHE[meta.alphaId].history = meta.history;
@@ -900,14 +915,18 @@ async function syncActiveConfig() {
                                 HISTORY_CACHE[meta.alphaId].data.history = meta.history;
                             }
                         } else {
-                            HISTORY_CACHE[meta.alphaId] = { ...meta, db_id: row.id };
+                            HISTORY_CACHE[meta.alphaId] = roundEntry;
                         }
                     }
                 }
             });
             ACTIVE_CONFIG = newActive;
+            TOURNAMENT_HISTORY_INDEX = newHistoryByTournament;
             ACTIVE_TOKEN_LIST = newTokens;
-            console.log(`⚡ Sync Config: ${Object.keys(ACTIVE_CONFIG).length} ACTIVE, History updated.`);
+            console.log(
+                `⚡ Sync Config: ${Object.keys(ACTIVE_CONFIG).length} ACTIVE, `
+                + `${Object.keys(TOURNAMENT_HISTORY_INDEX).length} History rounds indexed.`
+            );
         }
     } catch (e) { console.error("❌ Sync Active Config Error:", e.message); }
 }
@@ -1701,7 +1720,10 @@ app.get('/api/competition-data', (req, res) => {
     const responseData = {};
     const nowStr = new Date().toISOString().split('T')[0];
     if (scope !== 'running') {
-        Object.entries(HISTORY_CACHE).forEach(([key, item]) => {
+        buildRoundSafeHistoryEntries(
+            TOURNAMENT_HISTORY_INDEX,
+            HISTORY_CACHE,
+        ).forEach(([key, item]) => {
             responseData[key] = attachCompetitionPriceSeries(item);
         });
     }
