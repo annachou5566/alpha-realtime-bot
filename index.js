@@ -29,6 +29,9 @@ const {
     createCompetitionPriceSeriesPublisher,
 } = require('./lib/competition-price-series-publisher');
 const {
+    selectFreshAlphaTokenList,
+} = require('./lib/alpha-market-token-list');
+const {
     buildRoundSafeHistoryEntries,
 } = require('./lib/competition-history-response');
 
@@ -344,8 +347,11 @@ async function syncBinanceTokenList() {
         const url = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
         const res = await axios.get(url, { headers: FAKE_HEADERS, timeout: 10000 });
         if (res.data && res.data.success && Array.isArray(res.data.data)) {
-            BINANCE_TOKEN_LIST = res.data.data;
-            console.log(`🌐 Đã tải thành công Danh bạ Master List: ${BINANCE_TOKEN_LIST.length} tokens từ Binance.`);
+            BINANCE_TOKEN_LIST = selectFreshAlphaTokenList(
+                BINANCE_TOKEN_LIST,
+                res.data.data,
+            );
+            console.log(`🌐 Đã đồng bộ Danh bạ Master List: ${BINANCE_TOKEN_LIST.length} tokens từ Binance.`);
         }
     } catch (error) {
         console.error("⚠️ Lỗi tải danh bạ Binance:", error.message);
@@ -1439,6 +1445,15 @@ async function loopRealtime() {
         }
 
         if (resTot.data?.success) {
+            // Alpha Market membership freshness: reuse the already-paid aggregate
+            // response as the canonical browser token list. No extra Binance
+            // request is added, and new alphaIds become visible within the
+            // existing realtime poll interval instead of waiting up to 6 hours.
+            BINANCE_TOKEN_LIST = selectFreshAlphaTokenList(
+                BINANCE_TOKEN_LIST,
+                resTot.data.data,
+            );
+
             const now = new Date();
             const currentTs = now.getTime();
             const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
