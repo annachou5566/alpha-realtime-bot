@@ -36,5 +36,8 @@ test('loopRealtime refreshes token membership from its existing aggregate poll',
 
     const loop = source.slice(start, end);
     assert.match(loop, /axios\.get\(API_ENDPOINTS\.BULK_TOTAL/);
-    assert.match(loop, /BINANCE_TOKEN_LIST\s*=\s*selectFreshAlphaTokenList\(BINANCE_TOKEN_LIST,\s*resTot\.data\.data\)/);
+    assert.match(
+        loop,
+        /BINANCE_TOKEN_LIST\s*=\s*selectFreshAlphaTokenList\(\s*BINANCE_TOKEN_LIST,\s*resTot\.data\.data,?\s*\)/,
+    );
 });
