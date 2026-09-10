@@ -21,7 +21,7 @@ test('competition-data embeds the existing R2 price series in the one browser pa
     assert.match(source, /competition_price_series_v3: embeddedCompetitionPriceSeries\(config\)/);
 
     const api = sliceBetween("app.get('/api/competition-data'", '// =======================================================\n// 📈 API KLINES');
-    assert.match(api, /Object\.entries\(HISTORY_CACHE\)/);
+    assert.match(api, /buildRoundSafeHistoryEntries\(\s*TOURNAMENT_HISTORY_INDEX,\s*HISTORY_CACHE,\s*\)/);
     assert.match(api, /attachCompetitionPriceSeries\(item\)/);
     assert.match(api, /competition_price_series_v3: embeddedCompetitionPriceSeries\(config\)/);
 });
