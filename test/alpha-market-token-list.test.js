@@ -81,3 +81,18 @@ test('loopRealtime refreshes membership from the existing aggregate poll without
         /BINANCE_TOKEN_LIST\s*=\s*selectFreshAlphaTokenList\(\s*BINANCE_TOKEN_LIST,\s*resTot\.data\.data,?\s*\)/,
     );
 });
+
+
+test('six-hour master sync uses the same no-truncation membership merge', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+    const start = source.indexOf('async function syncBinanceTokenList()');
+    const end = source.indexOf('// HÀM LẤY 14 CÂY NẾN 1D', start);
+    assert.ok(start >= 0 && end > start);
+
+    const sync = source.slice(start, end);
+    assert.match(
+        sync,
+        /BINANCE_TOKEN_LIST\s*=\s*selectFreshAlphaTokenList\(\s*BINANCE_TOKEN_LIST,\s*res\.data\.data,?\s*\)/,
+    );
+    assert.doesNotMatch(sync, /BINANCE_TOKEN_LIST\s*=\s*res\.data\.data/);
+});
