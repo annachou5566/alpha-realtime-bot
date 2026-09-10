@@ -43,7 +43,7 @@ test('active round keyed by alphaId cannot overwrite a History round', () => {
     assert.equal(history.ALPHA_506.name, 'COLLECT (R2)');
 });
 
-test('Supabase round index wins over stale legacy alphaId cache', () => {
+test('same alphaId across distinct tournament ids is never truncated', () => {
     const entries = buildRoundSafeHistoryEntries({
         186: { db_id: 186, name: 'AIA (R2)', alphaId: 'ALPHA_496' },
     }, {
@@ -52,7 +52,21 @@ test('Supabase round index wins over stale legacy alphaId cache', () => {
 
     const out = Object.fromEntries(entries);
     assert.equal(out.history_186.name, 'AIA (R2)');
-    assert.equal(Object.values(out).some(item => item.name === 'AIA (R1)'), false);
+    assert.equal(out.history_180.name, 'AIA (R1)');
+});
+
+test('legacy entry is skipped only when exact tournament id is already indexed', () => {
+    const entries = buildRoundSafeHistoryEntries({
+        180: { db_id: 180, name: 'AIA (R1)', alphaId: 'ALPHA_496' },
+        186: { db_id: 186, name: 'AIA (R2)', alphaId: 'ALPHA_496' },
+    }, {
+        ALPHA_496: { db_id: 180, name: 'AIA (R1)', alphaId: 'ALPHA_496' },
+    });
+
+    const out = Object.fromEntries(entries);
+    assert.equal(Object.keys(out).length, 2);
+    assert.equal(out.history_180.name, 'AIA (R1)');
+    assert.equal(out.history_186.name, 'AIA (R2)');
 });
 
 test('legacy-only History remains available as compatibility fallback', () => {
