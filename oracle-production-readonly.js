@@ -8,8 +8,8 @@ const {
     installSupabaseMutationGuard,
 } = require('./lib/production-readonly-mode');
 const {
-    loadProductionReadonlyIndexWithConfigSignal,
-} = require('./lib/production-readonly-config-signal-hardening');
+    loadProductionReadonlyIndexWithCompetitionWindow,
+} = require('./lib/production-readonly-competition-window-hardening');
 
 const state = prepareProductionReadonlyEnv(process.env);
 globalThis.__WAVE_PRODUCTION_READONLY_STATE = state;
@@ -22,5 +22,5 @@ installS3MutationGuard(S3Client, state);
 installSupabaseMutationGuard(globalThis, process.env.SUPABASE_URL, state);
 
 console.log('[PRODUCTION-READONLY] Wave Alpha Oracle candidate starting', state.snapshot());
-const loaded = loadProductionReadonlyIndexWithConfigSignal(require.resolve('./index'));
+const loaded = loadProductionReadonlyIndexWithCompetitionWindow(require.resolve('./index'));
 console.log('[PRODUCTION-READONLY] Source hardening applied', loaded.applied);
