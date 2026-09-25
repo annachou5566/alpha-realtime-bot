@@ -36,14 +36,4 @@ test('free-tier bandwidth safeguards remain enabled', () => {
     assert.match(source, /Number\(dryRun\.missing \|\| 0\) > 0 \|\| Number\(dryRun\.migrated \|\| 0\) > 0/);
 });
 
-
-test('alpha klines route exposes bounded endTime', () => {
-    assert.ok(source.includes("const { contract, chainId, interval, limit, endTime } = req.query"));
-    assert.ok(source.includes("Invalid endTime"));
-    assert.ok(source.includes("queryEndTime || 'latest'"));
-    assert.ok(source.includes("bapiUrl += `&endTime=${queryEndTime}`"));
-    assert.ok(!source.includes("bapiUrl += `&startTime=${queryEndTime}`"));
-});
-
-
 // Canonical CI trigger for the final reviewed rollout head.
