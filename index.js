@@ -1424,10 +1424,18 @@ app.get('/api/competition-data', (req, res) => {
 const KLINES_CACHE = {};
 
 app.get('/api/klines', async (req, res) => {
-    const { contract, chainId, interval, limit } = req.query;
+    const { contract, chainId, interval, limit, endTime } = req.query;
 
     let binanceInterval = interval === 'tick' ? '1s' : interval;
     let queryLimit = limit || 300;
+    let queryEndTime = null;
+    if (endTime !== undefined && endTime !== null && String(endTime) !== '') {
+        const parsedEndTime = Number(endTime);
+        if (!Number.isSafeInteger(parsedEndTime) || parsedEndTime <= 0) {
+            return res.status(400).json({ error: 'Invalid endTime' });
+        }
+        queryEndTime = parsedEndTime;
+    }
 
     if (!contract || contract === 'undefined' || contract === 'null') {
         return res.json([]); 
@@ -1442,7 +1450,7 @@ app.get('/api/klines', async (req, res) => {
     }
 
     // 1. TẠO CHÌA KHÓA CACHE ĐỘC NHẤT
-    let cacheKey = `${cid}_${cleanAddr}_${binanceInterval}_${queryLimit}`;
+    let cacheKey = `${cid}_${cleanAddr}_${binanceInterval}_${queryLimit}_${queryEndTime || 'latest'}`;
     let nowTs = Date.now();
 
     // 2. KIỂM TRA KÉT SẮT RAM (NẾU CÓ TRONG VÒNG 15 GIÂY THÌ TRẢ VỀ LUÔN)
@@ -1454,6 +1462,7 @@ app.get('/api/klines', async (req, res) => {
     let klines = [];
     try {
         let bapiUrl = `https://www.binance.com/bapi/defi/v1/public/alpha-trade/agg-klines?chainId=${cid}&interval=${binanceInterval}&limit=${queryLimit}&tokenAddress=${cleanAddr}&dataType=aggregate`;
+        if (queryEndTime) bapiUrl += `&endTime=${queryEndTime}`;
         
         const response = await axios.get(bapiUrl, { headers: FAKE_HEADERS, timeout: 10000 });
         
