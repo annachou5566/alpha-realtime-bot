@@ -28,16 +28,16 @@ test('standalone path injects ended public config rows and needs no Supabase cre
 });
 
 test('launcher maps only dedicated aliases of the existing encrypted R2 writer credential', () => {
-    assert.match(launch, /R2_ANALYTICS_WRITE_ACCESS_KEY_ID/);
-    assert.match(launch, /R2_ANALYTICS_WRITE_SECRET_ACCESS_KEY/);
+    assert.match(launch, /R2_TAILS_WRITE_ACCESS_KEY_ID/);
+    assert.match(launch, /R2_TAILS_WRITE_SECRET_ACCESS_KEY/);
     assert.match(launch, /refusing inherited credential env/);
     assert.doesNotMatch(launch, /SUPABASE_ANON_KEY/);
     assert.doesNotMatch(launch, /SUPABASE_SERVICE_ROLE_KEY=.*cat/);
 });
 
 test('service reuses existing bucket writer ciphertext and remains isolated from reader', () => {
-    assert.match(service, /wave-alpha-tails-r2-access-key-id\.cred/);
-    assert.match(service, /wave-alpha-tails-r2-secret-access-key\.cred/);
+    assert.match(service, /R2_TAILS_WRITE_ACCESS_KEY_ID:.*wave-alpha-tails-r2-access-key-id\.cred/);
+    assert.match(service, /R2_TAILS_WRITE_SECRET_ACCESS_KEY:.*wave-alpha-tails-r2-secret-access-key\.cred/);
     assert.match(service, /Type=oneshot/);
     assert.match(service, /MemoryMax=192M/);
     assert.match(service, /CPUQuota=25%/);
