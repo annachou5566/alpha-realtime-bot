@@ -1,0 +1,52 @@
+[Unit]
+Description=Wave Alpha Competition analytics canonical R2 writer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=wavealpha-alpha
+Group=wavealpha-alpha
+WorkingDirectory=/opt/wave-alpha/competition-analytics-writer/current
+
+Environment=NODE_OPTIONS=--max-old-space-size=160
+Environment=R2_ENDPOINT_URL=https://0f534c1b6f9bc097235b37c07d1dc32e.r2.cloudflarestorage.com
+Environment=R2_BUCKET_NAME=wave-alpha-data
+Environment=SUPABASE_URL=https://akbcpryqjigndzpuoany.supabase.co
+Environment=WAVE_ALPHA_NODE_BIN=/opt/wave-alpha/node/current/bin/node
+Environment=WAVE_ALPHA_APP_DIR=/opt/wave-alpha/competition-analytics-writer/current
+
+LoadCredentialEncrypted=R2_ANALYTICS_WRITE_ACCESS_KEY_ID:/etc/credstore.encrypted/wave-alpha-competition-analytics-r2-access-key-id.cred
+LoadCredentialEncrypted=R2_ANALYTICS_WRITE_SECRET_ACCESS_KEY:/etc/credstore.encrypted/wave-alpha-competition-analytics-r2-secret-access-key.cred
+LoadCredentialEncrypted=SUPABASE_ANALYTICS_READ_ANON_KEY:/etc/credstore.encrypted/wave-alpha-competition-analytics-supabase-anon-key.cred
+
+ExecStart=/usr/bin/bash /opt/wave-alpha/competition-analytics-writer/current/scripts/oracle-competition-analytics-launch.sh
+
+TimeoutStartSec=10min
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=192M
+CPUQuota=25%
+TasksMax=96
+LimitNOFILE=4096
+
+[Install]
+# Intentionally activated only through competition-analytics-production.timer.
