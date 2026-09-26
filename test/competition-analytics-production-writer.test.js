@@ -12,25 +12,32 @@ const timer = fs.readFileSync('deploy/oracle/competition-analytics-production.ti
 
 test('standalone entrypoint reuses the canonical bounded producer', () => {
     assert.match(entry, /runCompetitionAnalyticsPhase1/);
+    assert.match(entry, /competition-data\?scope=history/);
+    assert.match(entry, /WRITE_TARGET=competition-analytics\/phase1\.json/);
     assert.match(producer, /STATE_KEY = 'competition-analytics\/phase1\.json'/);
     assert.match(producer, /MAX_TOURNAMENTS_PER_RUN = 6/);
     assert.match(producer, /\.slice\(0, MAX_TOURNAMENTS_PER_RUN\)/);
 });
 
-test('producer supports readonly Supabase auth for the standalone writer', () => {
-    assert.match(producer, /env\.SUPABASE_ANON_KEY \|\| env\.SUPABASE_SERVICE_ROLE_KEY/);
-    assert.match(producer, /SUPABASE_ANON_KEY\|SUPABASE_SERVICE_ROLE_KEY/);
+test('standalone path injects ended public config rows and needs no Supabase credential', () => {
+    assert.match(entry, /function endedRows/);
+    assert.match(entry, /parseEndAt/);
+    assert.match(entry, /rewardMeta/);
+    assert.match(producer, /Array\.isArray\(options\.rows\)/);
+    assert.doesNotMatch(entry, /SUPABASE_|createClient/);
 });
 
-test('launcher maps only dedicated credential files and rejects inherited broad env', () => {
+test('launcher maps only dedicated aliases of the existing encrypted R2 writer credential', () => {
     assert.match(launch, /R2_ANALYTICS_WRITE_ACCESS_KEY_ID/);
     assert.match(launch, /R2_ANALYTICS_WRITE_SECRET_ACCESS_KEY/);
-    assert.match(launch, /SUPABASE_ANALYTICS_READ_ANON_KEY/);
     assert.match(launch, /refusing inherited credential env/);
-    assert.match(launch, /SUPABASE_SERVICE_ROLE_KEY/);
+    assert.doesNotMatch(launch, /SUPABASE_ANON_KEY/);
+    assert.doesNotMatch(launch, /SUPABASE_SERVICE_ROLE_KEY=.*cat/);
 });
 
-test('service is a bounded isolated oneshot and never restarts the readonly reader', () => {
+test('service reuses existing bucket writer ciphertext and remains isolated from reader', () => {
+    assert.match(service, /wave-alpha-tails-r2-access-key-id\.cred/);
+    assert.match(service, /wave-alpha-tails-r2-secret-access-key\.cred/);
     assert.match(service, /Type=oneshot/);
     assert.match(service, /MemoryMax=192M/);
     assert.match(service, /CPUQuota=25%/);
