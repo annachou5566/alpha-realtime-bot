@@ -12,7 +12,7 @@ CRED_DIR="${CREDENTIALS_DIRECTORY:-}"
 [[ -d "$APP_DIR" ]] || { printf '[COMP-ANALYTICS] app directory unavailable\n' >&2; exit 66; }
 [[ -n "$CRED_DIR" ]] || { printf '[COMP-ANALYTICS] credential directory unavailable\n' >&2; exit 67; }
 
-for inherited in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY
+for inherited in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SUPABASE_SERVICE_ROLE_KEY
 do
   if [[ -n "${!inherited:-}" ]]; then
     printf '[COMP-ANALYTICS] refusing inherited credential env: %s\n' "$inherited" >&2
@@ -22,15 +22,18 @@ done
 
 R2_ID_FILE="$CRED_DIR/R2_ANALYTICS_WRITE_ACCESS_KEY_ID"
 R2_SECRET_FILE="$CRED_DIR/R2_ANALYTICS_WRITE_SECRET_ACCESS_KEY"
-SUPABASE_FILE="$CRED_DIR/SUPABASE_ANALYTICS_READ_ANON_KEY"
 
-for f in "$R2_ID_FILE" "$R2_SECRET_FILE" "$SUPABASE_FILE"; do
+for f in "$R2_ID_FILE" "$R2_SECRET_FILE"; do
   [[ -f "$f" ]] || { printf '[COMP-ANALYTICS] required credential file missing\n' >&2; exit 69; }
 done
 
 export R2_ACCESS_KEY_ID="$(cat "$R2_ID_FILE")"
 export R2_SECRET_ACCESS_KEY="$(cat "$R2_SECRET_FILE")"
-export SUPABASE_ANON_KEY="$(cat "$SUPABASE_FILE")"
+
+[[ -n "$R2_ACCESS_KEY_ID" && -n "$R2_SECRET_ACCESS_KEY" ]] || {
+  printf '[COMP-ANALYTICS] empty R2 writer credential\n' >&2
+  exit 70
+}
 
 cd "$APP_DIR"
 exec "$NODE_BIN" oracle-competition-analytics-once.js
