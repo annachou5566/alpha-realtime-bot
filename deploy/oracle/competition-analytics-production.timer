@@ -1,0 +1,12 @@
+[Unit]
+Description=Wave Alpha Competition analytics 15-minute canonical scheduler
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00 UTC
+AccuracySec=30s
+RandomizedDelaySec=0
+Persistent=false
+Unit=competition-analytics-production.service
+
+[Install]
+WantedBy=timers.target
