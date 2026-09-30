@@ -34,6 +34,9 @@ const {
 const {
     buildRoundSafeHistoryEntries,
 } = require('./lib/competition-history-response');
+const {
+    createAlphaNodeFeedHandler,
+} = require('./lib/alpha-node-feed');
 
 const http = require('http');
 const WebSocket = require('ws'); // dùng cho Spot Ticker stream từ Binance
@@ -1718,6 +1721,11 @@ async function loopRealtime() {
 // ==========================================
 // 6. API TRẢ DỮ LIỆU CHO FRONTEND
 // ==========================================
+app.get('/api/alpha-node', createAlphaNodeFeedHandler({
+    supabase,
+    logger: console,
+}));
+
 app.get('/api/token-list', (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.json({ success: true, data: BINANCE_TOKEN_LIST });
