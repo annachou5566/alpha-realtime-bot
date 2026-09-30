@@ -8,6 +8,7 @@ const {
     isS3MutationCommand,
     installS3MutationGuard,
     installSupabaseMutationGuard,
+    isAllowedAlphaNodeReadRpc,
 } = require('../lib/production-readonly-mode');
 
 function readonlyEnv() {
@@ -101,4 +102,83 @@ test('Supabase guard allows reads, blocks mutation methods before network and co
         { input: 'https://www.binance.com/bapi/test', method: 'POST' },
     ]);
     assert.equal(state.snapshot().blocked.supabase, 1);
+});
+
+
+test('Supabase guard allows only exact bounded Alpha Node read RPC POST', async () => {
+    const calls = [];
+    const fakeGlobal = {
+        fetch: async (input, init) => {
+            calls.push({
+                input: String(input),
+                method: String((init && init.method) || 'GET').toUpperCase(),
+                body: init && init.body,
+            });
+            return { ok: true };
+        },
+    };
+    const state = prepareProductionReadonlyEnv(readonlyEnv());
+    installSupabaseMutationGuard(fakeGlobal, 'https://example.supabase.co', state);
+
+    const good = {
+        method: 'POST',
+        body: JSON.stringify({ p_limit: 30, p_before_id: null }),
+    };
+
+    assert.equal(
+        isAllowedAlphaNodeReadRpc(
+            'https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read',
+            good,
+            'https://example.supabase.co',
+        ),
+        true,
+    );
+
+    await fakeGlobal.fetch(
+        'https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read',
+        good,
+    );
+
+    const rejected = [
+        ['https://example.supabase.co/rest/v1/rpc/other_rpc', good],
+        ['https://other.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read', good],
+        ['https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read?x=1', good],
+        ['https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read', {
+            method: 'POST',
+            body: JSON.stringify({ p_limit: 51, p_before_id: null }),
+        }],
+        ['https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read', {
+            method: 'POST',
+            body: JSON.stringify({ p_limit: 30, p_before_id: null, extra: true }),
+        }],
+        ['https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read', {
+            method: 'POST',
+            body: JSON.stringify({ p_limit: 30, p_before_id: 0 }),
+        }],
+        ['https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read', {
+            method: 'POST',
+            body: '{}',
+        }],
+    ];
+
+    for (const [url, init] of rejected) {
+        if (url.startsWith('https://other.supabase.co')) {
+            assert.equal(
+                isAllowedAlphaNodeReadRpc(url, init, 'https://example.supabase.co'),
+                false,
+            );
+            continue;
+        }
+        await assert.rejects(
+            fakeGlobal.fetch(url, init),
+            /Blocked Supabase mutation before network: POST/,
+        );
+    }
+
+    assert.deepEqual(calls, [{
+        input: 'https://example.supabase.co/rest/v1/rpc/wave_alpha_node_feed_read',
+        method: 'POST',
+        body: JSON.stringify({ p_limit: 30, p_before_id: null }),
+    }]);
+    assert.equal(state.snapshot().blocked.supabase, 6);
 });
