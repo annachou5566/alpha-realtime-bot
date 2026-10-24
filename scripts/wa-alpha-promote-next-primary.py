@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """WaveAlpha Alpha only: promote qualified encrypted NEXT as sole active API key.
+HTTP helper is named http_get to avoid shadowing imported http.client (prior AttributeError gate).
 Existing service only; no secret values in terminal; rollback to dual on failure.
 Source/runtime preflight pinned to ed0af597f525ce2295593d352530665ab4b38674.
 """
@@ -66,7 +67,7 @@ def credentials():
    encrypted[name]=path
  return plain,encrypted
 
-def http(path,key=None):
+def http_get(path,key=None):
  c=http.client.HTTPConnection("127.0.0.1",3100,timeout=8)
  try:
   c.request("GET",path,headers={"x-api-key":key} if key is not None else {})
@@ -76,13 +77,13 @@ def http(path,key=None):
   c.close()
 
 def valid_api(key):
- s,body=http("/api/token-list",key)
+ s,body=http_get("/api/token-list",key)
  if s!=200 or len(body)>3000000: return False
  doc=json.loads(body)
  return doc.get("success") is True and isinstance(doc.get("data"),list) and len(doc["data"])>0
 
 def health_ready():
- return cmd("systemctl","is-active",SERVICE)=="active" and http("/health")[0]==200
+ return cmd("systemctl","is-active",SERVICE)=="active" and http_get("/health")[0]==200
 
 def runtime_valid(expect_old,previous_pid=None):
  if not health_ready():return False
@@ -90,15 +91,15 @@ def runtime_valid(expect_old,previous_pid=None):
  pid=cmd("systemctl","show","-P","MainPID",SERVICE)
  if not pid.isdigit() or int(pid)<1 or (previous_pid is not None and pid==previous_pid):return False
  if not valid_api(new):return False
- if http("/api/token-list",old)[0]!=(200 if expect_old else 401):return False
- if http("/api/token-list","invalid-synthetic-retirement")[0]!=401:return False
- if http("/api/token-list")[0]!=401:return False
+ if http_get("/api/token-list",old)[0]!=(200 if expect_old else 401):return False
+ if http_get("/api/token-list","invalid-synthetic-retirement")[0]!=401:return False
+ if http_get("/api/token-list")[0]!=401:return False
  if not expect_old:
   if (RUNTIME/"PRODUCTION_READ_API_SECRET_KEY_NEXT").exists():return False
   if (RUNTIME/"PRODUCTION_READ_API_SECRET_KEY").read_text().rstrip("\n")!=new:return False
-  status,body=http("/api/market-data",new)
+  status,body=http_get("/api/market-data",new)
   if status!=200 or json.loads(body).get("success") is not True:return False
-  status,body=http("/api/alpha-node?limit=1",new)
+  status,body=http_get("/api/alpha-node?limit=1",new)
   if status!=200 or json.loads(body).get("schemaVersion")!=1:return False
  return True
 
@@ -134,7 +135,7 @@ try:
  require(bool(old) and bool(re.fullmatch("[0-9a-f]{64}",new)) and old!=new,"key_material_invalid")
  require((RUNTIME/"PRODUCTION_READ_API_SECRET_KEY_NEXT").read_text().rstrip("\n")==new,"loaded_next_mismatch")
  require(valid_api(old) and valid_api(new),"dual_baseline_bad")
- require(http("/api/token-list","invalid-synthetic-retirement")[0]==401 and http("/api/token-list")[0]==401,"baseline_failclosed_bad")
+ require(http_get("/api/token-list","invalid-synthetic-retirement")[0]==401 and http_get("/api/token-list")[0]==401,"baseline_failclosed_bad")
  oldpid=cmd("systemctl","show","-P","MainPID",SERVICE)
  require(oldpid.isdigit() and int(oldpid)>0,"pid_invalid")
  print("PREFLIGHT=PASS_DUAL_AND_EXACT_SIX_MAPPINGS",flush=True)
