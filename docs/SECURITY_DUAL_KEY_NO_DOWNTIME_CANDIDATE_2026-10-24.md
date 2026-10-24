@@ -23,6 +23,11 @@ A single-instance service restart may drop active connections/reads and therefor
 6. Finally revoke the old verifier identity on ALL reachable runtimes once every producer and backout path is on the new credential. Prove accept(new) and reject(old) with synthetic/local verification while keeping the production user experience working.
 7. Independently verify no Production Chart/Save/D1/gateway changes, exact release SHA, Free/Always Free headroom, and private `wave-alpha` GitHub Actions all-trigger count 0. Only then declare Alpha credential incident closed.
 
+## New fail-closed qualification (2026-10-24)
+The startup script candidate now explicitly rejects **any inherited** `PRODUCTION_READ_API_SECRET_KEY_NEXT`, even empty, before loading the optional second key from `CREDENTIALS_DIRECTORY`. This avoids accepting an unaudited standby identity injected by the service environment. Added source-exact isolated middleware tests in `test/readonly-api-auth-middleware.test.js` for both identities, malformed header, existing health/preflight contract and final new-only mode, plus static launch-script negative check. No Oracle runtime or old key changed.
+
+Additional V8 source-exact checks: auth middleware 10/10 synthetic cases PASS; existing immutable Oracle read-only source-hardening pipeline applied all 23/23 unique transforms to the candidate index and JS syntax parsed. Local Node 22 5/5 standalone credential helper fixture PASS. Full repo native test suite and independent Oracle/hosted continuity are still NOT RUN/NOT PASS. Not a Production approval.
+
 ## Proof scope
 Node 22 isolated helper synthetic test matrix: 5/5 PASS. Exact read-only mode helper executed with synthetic env in connector V8: 6/6 PASS. The full dependency installation/npm suite, runtime Oracle deployment, live credential overlap, actual new-key acceptance, old-key revocation, hosted security and Production availability **HAVE NOT** been tested or performed in this candidate.
 
