@@ -202,6 +202,9 @@ test('optional standby rejects missing, duplicate and inherited identity', () =>
     for (const inheritedValue of ['', 'untrusted-synthetic']) {
         const env = readonlyEnv();
         env.API_SECRET_KEY_NEXT = inheritedValue;
-        assert.throws(() => prepareProductionReadonlyEnv(env), /Refusing inherited legacy credential env: API_SECRET_KEY_NEXT/);
+        const expectedDenial = inheritedValue === ''
+            ? /Inherited standby API credential denied/
+            : /Refusing inherited legacy credential env: API_SECRET_KEY_NEXT/;
+        assert.throws(() => prepareProductionReadonlyEnv(env), expectedDenial);
     }
 });
