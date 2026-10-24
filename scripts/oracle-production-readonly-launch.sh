@@ -44,6 +44,20 @@ require_file "$R2_ID_FILE"
 require_file "$R2_SECRET_FILE"
 require_file "$SUPABASE_ANON_FILE"
 require_file "$API_KEY_FILE"
+# Accept the optional key only from the service-owned credential directory.
+if [[ "${PRODUCTION_READ_API_SECRET_KEY_NEXT+x}" == x ]]; then
+  printf '[PRODUCTION-READONLY] refusing inherited standby API credential\n' >&2
+  exit 74
+fi
+NEXT_API_KEY_FILE="$CRED_DIR/PRODUCTION_READ_API_SECRET_KEY_NEXT"
+if [[ -e "$NEXT_API_KEY_FILE" ]]; then
+  require_file "$NEXT_API_KEY_FILE"
+  export PRODUCTION_READ_API_SECRET_KEY_NEXT="$(cat "$NEXT_API_KEY_FILE")"
+  [[ -n "$PRODUCTION_READ_API_SECRET_KEY_NEXT" ]] || {
+    printf '[PRODUCTION-READONLY] empty optional standby API credential\n' >&2
+    exit 73
+  }
+fi
 
 export R2_READ_ONLY_ACCESS_KEY_ID="$(cat "$R2_ID_FILE")"
 export R2_READ_ONLY_SECRET_ACCESS_KEY="$(cat "$R2_SECRET_FILE")"
