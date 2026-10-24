@@ -142,7 +142,7 @@ def main():
 
         protected = {str(ACTIVE): exact_file(ACTIVE), str(PRIMARY): exact_file(PRIMARY)}
         for path in PLAIN.values():
-            protected[path] = exact_file(path)
+            protected[path] = exact_file(pathlib.Path(path))
         retired = {str(path): exact_file(path) for path in (DUAL, NEXT, OLD)}
         mapping()
         shadow_guard()
