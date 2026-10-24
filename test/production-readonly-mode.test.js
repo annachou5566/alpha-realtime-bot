@@ -102,3 +102,24 @@ test('Supabase guard allows reads, blocks mutation methods before network and co
     ]);
     assert.equal(state.snapshot().blocked.supabase, 1);
 });
+
+test('optional standby identity is absent by default and mapped only when staged', () => {
+    const legacy = readonlyEnv();
+    prepareProductionReadonlyEnv(legacy);
+    assert.equal(Object.prototype.hasOwnProperty.call(legacy, 'API_SECRET_KEY_NEXT'), false);
+    const staged = readonlyEnv();
+    staged.PRODUCTION_READ_API_SECRET_KEY_NEXT = 'next-synthetic';
+    prepareProductionReadonlyEnv(staged);
+    assert.equal(staged.API_SECRET_KEY, 'read-api-key');
+    assert.equal(staged.API_SECRET_KEY_NEXT, 'next-synthetic');
+});
+test('optional standby identity fails closed on empty, duplicate, inherited values', () => {
+    for (const standby of ['', '  ', 'read-api-key']) {
+        const env = readonlyEnv();
+        env.PRODUCTION_READ_API_SECRET_KEY_NEXT = standby;
+        assert.throws(() => prepareProductionReadonlyEnv(env), /PRODUCTION_READ_API_SECRET_KEY_NEXT|Standby API credential/);
+    }
+    const inherited = readonlyEnv();
+    inherited.API_SECRET_KEY_NEXT = 'unapproved-inherited-synthetic';
+    assert.throws(() => prepareProductionReadonlyEnv(inherited), /inherited legacy credential/);
+});
