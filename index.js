@@ -219,6 +219,7 @@ app.use(cors({
 
 // --- BẢO MẬT: CỬA AN NINH KIỂM TRA API KEY ---
 const RENDER_SECRET_KEY = process.env.API_SECRET_KEY; // Lấy key từ biến môi trường
+const { isAuthorizedAlphaReadKey } = require('./lib/readonly-api-auth');
 app.use((req, res, next) => {
     // Luôn cho phép các luồng kiểm tra sơ bộ (Preflight OPTIONS) đi qua
     if (req.method === 'OPTIONS') return next();
@@ -233,7 +234,7 @@ app.use((req, res, next) => {
     const clientKey = req.headers['x-api-key'];
     
     // Nếu không có key hoặc key sai -> Chặn lại
-    if (!clientKey || clientKey !== RENDER_SECRET_KEY) {
+    if (!isAuthorizedAlphaReadKey(clientKey, RENDER_SECRET_KEY, process.env.API_SECRET_KEY_NEXT)) {
         // Chỉ in cảnh báo nếu KHÔNG PHẢI là máy chủ tự gọi chính nó (tránh rác log do Health Check)
         if (req.ip !== '::1' && req.ip !== '127.0.0.1') {
             console.warn(`🚨 Cảnh báo: Có kẻ lạ xâm nhập bị chặn! IP: ${req.ip} | Path: ${req.path}`);
