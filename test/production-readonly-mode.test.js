@@ -182,3 +182,26 @@ test('Supabase guard allows only exact bounded Alpha Node read RPC POST', async 
     }]);
     assert.equal(state.snapshot().blocked.supabase, 6);
 });
+
+test('optional standby absent by default and provided only when explicitly staged', () => {
+    const legacy = readonlyEnv();
+    prepareProductionReadonlyEnv(legacy);
+    assert.equal(Object.prototype.hasOwnProperty.call(legacy, 'API_SECRET_KEY_NEXT'), false);
+    const staged = readonlyEnv();
+    staged.PRODUCTION_READ_API_SECRET_KEY_NEXT = 'synthetic-next-key';
+    prepareProductionReadonlyEnv(staged);
+    assert.equal(staged.API_SECRET_KEY, 'read-api-key');
+    assert.equal(staged.API_SECRET_KEY_NEXT, 'synthetic-next-key');
+});
+test('optional standby rejects missing, duplicate and inherited identity', () => {
+    for (const standby of ['', ' ', 'read-api-key']) {
+        const env = readonlyEnv();
+        env.PRODUCTION_READ_API_SECRET_KEY_NEXT = standby;
+        assert.throws(() => prepareProductionReadonlyEnv(env), /PRODUCTION_READ_API_SECRET_KEY_NEXT|Standby API credential/);
+    }
+    for (const inheritedValue of ['', 'untrusted-synthetic']) {
+        const env = readonlyEnv();
+        env.API_SECRET_KEY_NEXT = inheritedValue;
+        assert.throws(() => prepareProductionReadonlyEnv(env), /Inherited standby API credential/);
+    }
+});
