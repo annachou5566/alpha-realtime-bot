@@ -88,7 +88,7 @@ def runtime_valid(expect_old,previous_pid=None):
  pid=cmd("systemctl","show","-P","MainPID",SERVICE)
  if not pid.isdigit() or int(pid)<1 or (previous_pid is not None and pid==previous_pid):return False
  if not valid_api(new):return False
- if (http("/api/token-list",old)[0]==200) != expect_old:return False
+ if http("/api/token-list",old)[0]!=(200 if expect_old else 401):return False
  if http("/api/token-list","invalid-synthetic-retirement")[0]!=401:return False
  if http("/api/token-list")[0]!=401:return False
  if not expect_old:
