@@ -1,4 +1,21 @@
 # Oracle Alpha reader: actual deployed base 0dd32a1 / opt-in credential overlap
+
+## NEWEST RUNTIME CONTINUITY EVIDENCE — OWNER READ-ONLY SYSTEMD CHECK, 2026-10-24
+
+Owner checked the correct Alpha VM `micro-server-auto-2` and returned exactly:
+- `MainPID=481479`, `ActiveState=active`, `TasksCurrent=11`.
+- `MemoryCurrent=152666112` bytes (~145.6 MiB); `MemoryMax=402653184` bytes (384 MiB).
+- Host `MEM_TOTAL_MB=954`, `MEM_AVAILABLE_MB=389` at observation time.
+- `CanReload=no`, `NeedDaemonReload=no`.
+- `STANDBY_CREDENTIAL_DECLARED=NO`.
+These are point-in-time capacity facts, NOT reserved spare capacity or permission to launch parallel processes. No file, key, PID or service was modified during the observation.
+
+Connected Cloudflare read-only postcheck: Production Pages canonical deployment remains `5856b266-0194-42a5-a777-a5e2b4ecdd91`; `ALPHA_BACKEND` relay `wave-alpha-alpha-backend-relay` has exactly one `ALPHA_ORIGIN` VPC service binding to service ID `01a0604c-6cf5-7c12-8d02-c3b726c99c1c`; registry lists one HTTP service named `wa-alpha-alpha-backend-vpc-4d2a`. A single registry service does not by itself prove how many backend instances exist, but gives NO VERIFIED blue/green failover path.
+
+**HARD HOLD on live Oracle or Pages credential cutover:** no hot-reload; no staged LoadCredential; no proven zero-disruption alternate. Never restart `alpha-realtime-production-readonly.service`, run stopped-service Vault materializer, add another realtime/subscriber/poller/writer, promote this branch to main, swap Production Pages `RENDER_API_KEY`, or revoke the old API verifier from this evidence. The 389 MB currently available might fit additional code in a laboratory but is insufficient PROOF of reliable parallel production cutover, particularly with live listener and single-owner side effects. Neither Alpha security credential nor other four compromised fields are rotated. Security PASS cannot be declared.
+
+Continue with offline native integrated tests for the rebased source only, plus independent review of whether an infrastructure-supported no-restart verifier reconfiguration or a *strictly read-only, subscriber-disabled* blue/green backend is feasible under verified Always Free limits. Any future mutation requires exact resource/release scope and independent no-disruption validation. If one cannot prove continuity, preserve service and surface the blocker; do not create a counterfeit security completion.
+
 2026-10-24. SOURCE CANDIDATE ONLY. Do not deploy, restart service, change secrets or block Chart/Workspace Save.
 
 ## Runtime evidence supplied by owner; read-only and independently reconciled against GitHub
