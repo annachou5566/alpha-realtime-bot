@@ -175,7 +175,10 @@ try:
  print("WA_ALPHA_PRIMARY_RETIRE_END",flush=True)
  sys.exit(0)
 except Exception as ex:
+ import traceback
+ frames=[f for f in traceback.extract_tb(ex.__traceback__) if f.filename in (__file__,"<stdin>")]
  print("GATE=HOLD_"+phase+"_"+type(ex).__name__,flush=True)
+ print("ERROR_FRAMES="+",".join(str(f.lineno)+":"+f.name for f in frames[-5:]),flush=True)
  if not written_drop:
   if ACTIVE.is_file() and not ACTIVE.is_symlink():
    try: ACTIVE.unlink()

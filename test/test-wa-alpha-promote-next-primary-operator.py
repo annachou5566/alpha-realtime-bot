@@ -57,10 +57,10 @@ class HttpHelperRegression(unittest.TestCase):
   self.assertIn('"ALPHA_LIVE_PUBLISH_KEY":"/run/wave-alpha-alpha/credentials/ALPHA_LIVE_PUBLISH_KEY"',CODE)
   self.assertIn('require(plain==NEW_PLAIN and encrypted==NEW_ENCRYPTED',CODE)
   self.assertIn('require(plain==ORIGINAL and encrypted==OLD_ENCRYPTED',CODE)
-  self.assertIn('LoadCredentialEncrypted=PRODUCTION_READ_API_SECRET_KEY_NEXT', # current dual gate must be represented in baseline mapping
-                "LoadCredentialEncrypted=PRODUCTION_READ_API_SECRET_KEY_NEXT")
+  self.assertIn('OLD_ENCRYPTED={"PRODUCTION_READ_API_SECRET_KEY_NEXT":str(NEXT)}',CODE)
   self.assertIn('old)[0]!=(200 if expect_old else 401)',CODE)
   self.assertIn('ROLLBACK=PASS_DUAL_RESTORED',CODE)
+  self.assertIn('ERROR_FRAMES=',CODE)
   self.assertIn('ORACLE_PRIMARY_RETIRE=PASS_LOCAL_RUNTIME',CODE)
 
  def test_no_print_secret_names(self):
