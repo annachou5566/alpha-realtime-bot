@@ -44,6 +44,13 @@ require_file "$R2_ID_FILE"
 require_file "$R2_SECRET_FILE"
 require_file "$SUPABASE_ANON_FILE"
 require_file "$API_KEY_FILE"
+# The optional identity must enter only via its root-managed systemd credential file.
+# Reject even an empty inherited value to avoid an unaudited environment source.
+if [[ "${PRODUCTION_READ_API_SECRET_KEY_NEXT+x}" == x ]]; then
+  printf '[PRODUCTION-READONLY] refusing inherited standby API credential\n' >&2
+  exit 74
+fi
+
 
 # Optional second read API credential. No file means unchanged legacy authentication.
 # This script does not create credentials or touch the running service.
