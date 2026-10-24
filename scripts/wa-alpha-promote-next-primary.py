@@ -45,6 +45,8 @@ def cmd(*args, input_bytes=None, timeout=65):
 def require(flag,name):
  if not flag: raise RuntimeError(name)
 
+# systemd config_parse_load_credential stores both LoadCredential and
+# LoadCredentialEncrypted in ONE hashmap; either empty reset clears BOTH.
 def credentials():
  plain={}; encrypted={}
  output=cmd("systemctl","cat","--no-pager",SERVICE)
@@ -52,15 +54,15 @@ def credentials():
   line=line.strip()
   if line.startswith("LoadCredential="):
    value=line.split("=",1)[1]
-   if not value: plain.clear(); continue
+   if not value: plain.clear(); encrypted.clear(); continue
    name,sep,path=value.partition(":")
-   require(bool(sep) and name not in plain,"duplicate_or_invalid_plain")
+   require(bool(sep) and name not in plain and name not in encrypted,"duplicate_or_invalid_plain")
    plain[name]=path
   elif line.startswith("LoadCredentialEncrypted="):
    value=line.split("=",1)[1]
-   if not value: encrypted.clear(); continue
+   if not value: plain.clear(); encrypted.clear(); continue
    name,sep,path=value.partition(":")
-   require(bool(sep) and name not in encrypted,"duplicate_or_invalid_encrypted")
+   require(bool(sep) and name not in plain and name not in encrypted,"duplicate_or_invalid_encrypted")
    encrypted[name]=path
  return plain,encrypted
 
@@ -147,7 +149,6 @@ try:
  phase="DROPIN"
  settings=["[Service]","LoadCredential="]
  settings += ["LoadCredential="+n+":"+p for n,p in NEW_PLAIN.items()]
- settings += ["LoadCredentialEncrypted="]
  settings += ["LoadCredentialEncrypted=PRODUCTION_READ_API_SECRET_KEY:"+str(ACTIVE)]
  fd=os.open(str(DROP),os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
  written_drop=True
