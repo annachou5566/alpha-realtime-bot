@@ -62,9 +62,10 @@ def emit(s):
 
 def main():
     os.umask(0o077)
+    cf_env = dict(os.environ, CLOUDFLARE_ACCOUNT_ID=ACCOUNT)
     emit("WA_ALPHA_PAGES_SECRET_SWITCH_BEGIN")
     try:
-        who=call(WRANGLER+["whoami"], timeout=150, cwd="/tmp")
+        who=call(WRANGLER+["whoami"], timeout=150, cwd="/tmp", env=cf_env)
         if who.returncode!=0 or ACCOUNT.encode() not in (who.stdout+who.stderr):
             emit("GATE=HOLD_CF_ACCOUNT_NO_MUTATION")
             return 20
@@ -79,7 +80,7 @@ def main():
         # Only the next credential is passed by an in-memory stdin pipe to Wrangler.
         # No command argument, process environment, shell log or local file contains it.
         run=call(WRANGLER+["pages","secret","put","RENDER_API_KEY","--project-name",PROJECT,"--env","production"],
-                 input=remote.stdout+b"\n", timeout=180, cwd="/tmp")
+                 input=remote.stdout+b"\n", timeout=180, cwd="/tmp", env=cf_env)
         if run.returncode!=0:
             emit("PAGES_PATCH=INDETERMINATE_VERIFY_CONNECTED_API_NO_RETRY")
             return 22
