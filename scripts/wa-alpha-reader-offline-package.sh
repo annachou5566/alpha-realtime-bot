@@ -58,7 +58,10 @@ if env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" NODE_ENV=test CI=1 t
 else
   rc=$?
   printf 'NATIVE_TEST=FAIL rc=%s\n' "$rc"
-  tail -n 40 "$work/npm-test.log"
+  printf 'FIRST_FAILED_SUBTEST_CONTEXT_BEGIN\n'
+  awk '/^not ok / {left=32} left>0 {print; left--; shown++; if (shown>=80) exit}' "$work/npm-test.log"
+  printf 'FIRST_FAILED_SUBTEST_CONTEXT_END\n'
+  grep -E '^# (tests|pass|fail|cancelled|skipped) ' "$work/npm-test.log" | tail -n 5 || true
   exit "$rc"
 fi
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
