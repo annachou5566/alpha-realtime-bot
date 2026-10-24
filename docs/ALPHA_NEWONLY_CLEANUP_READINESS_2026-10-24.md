@@ -1,5 +1,22 @@
 # Alpha new-only credential cleanup — bounded readiness checkpoint (2026-10-24)
 
+## FINAL — 2026-10-24 15:05 ICT — THREE EXACT ARTIFACTS CLEANUP PASS (owner Oracle evidence)
+
+**Current finding supersedes the earlier `CLEANUP_GO=NO` / `CLEANUP_EXECUTED=NO` readiness-stage statements below.** Owner approved exact cleanup and executed SHA-pinned `scripts/wa-alpha-exact-retired-cleanup.py`; `SOURCE_INTEGRITY=PASS`. Observed Oracle output: `PREFLIGHT=PASS_EXACT_NEW_ONLY_SHADOW_AND_AUTH`, `DUAL_DROPIN_REMOVED=PASS_NO_RESTART`, `OLD_NEXT_ENCRYPTED_REMOVED=PASS`, `OLD_PLAINTEXT_REMOVED=PASS`, `EFFECTIVE_MAPPING=FIVE_NEW_ONLY`, `OLD_KEY=REJECTED_401_NEW_KEY=ACCEPTED`, `ALPHA_AND_SHADOW=ACTIVE_UNCHANGED_PID`, `CLEANUP=PASS_THREE_EXACT_ARTIFACTS`, `WA_ALPHA_EXACT_CLEANUP_RC=0`, `WA_ALPHA_EXACT_CLEANUP_END`. Owner returned to Debian prompt normally.
+
+**Wrapper reporting defect, not a cleanup failure:** `WA_ALPHA_CLEANUP_OUTER_RC=` was printed blank because outer Bash `printf 'WA_ALPHA_CLEANUP_OUTER_RC=%s\\n'` omitted the `"$rc"` argument. The inner Python script explicitly returned RC 0, all planned postchecks PASS; do not rerun cleanup to fix an output-only wrapper typo. Correct future wrapper syntax: `printf 'WA_ALPHA_CLEANUP_OUTER_RC=%s\\n' "$rc"`.
+
+**Exactly removed:** retired plaintext `/run/wave-alpha-alpha/credentials/PRODUCTION_READ_API_SECRET_KEY`; old NEXT encrypted `/etc/credstore.encrypted/PRODUCTION_READ_API_SECRET_KEY_NEXT`; obsolete dual drop-in `/etc/systemd/system/alpha-realtime-production-readonly.service.d/60-wavealpha-api-next.conf`. Existing ACTIVE encrypted / primary drop-in and four other credential mappings were preserved by guarded postchecks. Script used `systemctl daemon-reload`, no service restart/reboot/deploy. Running service and shadow continued at unchanged PIDs. This qualifies only **three exact filesystem path removals with local new-only semantic postcheck**, not secure erasure of backup copies nor boot recovery.
+
+**STILL OPEN / SEPARATE:** `/run` transient sources and static Alpha service lack reboot recovery qualification; do NOT reboot as a test. Other disclosed identities `SUPABASE_JWT_SECRET`, `LIQ_INGEST_TOKEN`, `CMC_API_KEY`, `WAVE_API_SECRET` have NOT been rotated. Global Security PASS and Chart Q2 Hosted/Production GO remain OPEN/NO-GO. No further Alpha cleanup scan, old operator, service restart or Pages redeploy is justified absent a concrete invalidator.
+
+STATUS: `ALPHA_THREE_ARTIFACT_CLEANUP=PASS_LOCAL_ORACLE`; `NEW_ONLY_AUTH=PASS`; `ALPHA_SHADOW_STABLE=PASS`; no further Alpha action required now.
+
+REMAINING RISK: Boot autoprov/recovery, inaccessible backups/secure media deletion, four other exposed credentials, overall Security and Chart hosted gates.
+
+NEXT BEST ACTION: Record in private WaveAlpha CURRENT_TRUTH/handoff, resume independent remaining credential remediation; do not ask owner for another Alpha audit.
+
+
 ## UPDATE — guarded cleanup operator ready, awaiting a single exact Oracle execution
 
 Current task branch has `scripts/wa-alpha-exact-retired-cleanup.py` and `test/test_wa_alpha_exact_retired_cleanup_mock.py`. Checked script at immutable SHA `f6c89d6b51b195e7362900c3af05f98d9e8f2aa0`, blob `c66067625c8071e72c29ad58f880f75136aea6d9`, SHA-256 `c94bee78355091dd5538119e22638c97198a84edb376aa5c309973e838df5336`. Independent local `py_compile` and mock tests **5/5 PASS** (success, wrong VM, shadow direct-old-consumer, symlink, post-reload partial failure). The mock harness is synthetic, NOT Oracle qualification.
