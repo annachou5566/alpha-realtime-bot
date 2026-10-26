@@ -37,27 +37,34 @@ def env_for(pid):
     return dict(x.split(b"=", 1) for x in raw.split(b"\0") if b"=" in x)
 
 def source_path():
+    """Classify the exact effective legacy plaintext source, never print the path."""
     if not DROPIN.is_file() or DROPIN.is_symlink():
         raise RuntimeError("EXPECTED_DROPIN_NOT_REGULAR")
+    import shlex
     matches = []
     for line in DROPIN.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith(("#", ";")):
             continue
-        for kind in ("LoadCredentialEncrypted=", "LoadCredential="):
-            if line.startswith(kind):
-                for part in line[len(kind):].split():
-                    if part.split(":", 1)[0] == NAME:
-                        matches.append((kind, part.partition(":")[2]))
-    if len(matches) != 1 or matches[0][0] != "LoadCredentialEncrypted=":
-        raise RuntimeError("ENCRYPTED_SINGLE_KEY_SOURCE_NOT_PROVEN")
+        if line.startswith(("LoadCredential=", "LoadCredentialEncrypted=")):
+            kind, value = line.split("=", 1)
+            try:
+                parts = shlex.split(value)
+            except ValueError:
+                raise RuntimeError("DROPIN_INVALID_QUOTING")
+            for part in parts:
+                if part.partition(":")[0] == NAME:
+                    matches.append((kind, part.partition(":")[2], line))
+    if len(matches) != 1 or matches[0][0] != "LoadCredential":
+        raise RuntimeError("SINGLE_PLAINTEXT_KEY_SOURCE_NOT_PROVEN")
     path = Path(matches[0][1])
     if not path.is_absolute() or path.is_symlink():
         raise RuntimeError("UNSAFE_SOURCE_PATH")
     info = path.stat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
         raise RuntimeError("UNSAFE_SOURCE_PERMISSIONS")
-    return path
+    return path, matches[0][2]
+
 
 def decrypt(path):
     p = subprocess.run(["systemd-creds", "decrypt", "--name=" + NAME, str(path), "-"],
@@ -158,45 +165,69 @@ def main():
     old = env.get(b"SUPABASE_ANON_KEY", b"")
     if not old.startswith(b"eyJ"):
         raise RuntimeError("BASELINE_NOT_LEGACY")
-    source = source_path()
-    if decrypt(source) != old.strip():
+    source, old_mapping = source_path()
+    if source.read_bytes().strip() != old.strip():
         raise RuntimeError("SOURCE_NOT_EFFECTIVE_LEGACY_KEY")
     local_api(pid)  # Assert protected API works before changing service.
-    print("PREFLIGHT=PASS_ENCRYPTED_SOURCE_AND_BASELINE_API", flush=True)
+    print("PREFLIGHT=PASS_PLAINTEXT_SOURCE_AND_BASELINE_API", flush=True)
     new = getpass.getpass("Paste Supabase publishable key (hidden, NOT chat): ").strip()
     if not re.fullmatch(r"sb_publishable_[A-Za-z0-9_-]{12,}", new):
         raise RuntimeError("NOT_A_PUBLISHABLE_KEY")
     rows = supabase_rows(new)  # 200 with correct IDs proves read access.
     sdk_read_preflight(pid, new)  # Exact deployed JS package: no JWT/API incompatibility.
     print("SUPABASE_NEW_KEY_READ=PASS_THREE_TOKENS_AND_JS_SDK", flush=True)
-    backup = Path(tempfile.mkdtemp(prefix=".wa-alpha-key-backup-", dir=str(source.parent)))
+    # Preserve exact original unit configuration and old root-only credential.
+    # New credential is encrypted at rest; do not overwrite the legacy source.
+    if DROPIN.stat().st_uid != 0 or DROPIN.stat().st_mode & 0o022:
+        raise RuntimeError("DROPIN_UNSAFE_OWNERSHIP_OR_MODE")
+    original = DROPIN.read_bytes()
+    if original.count(old_mapping.encode()) != 1:
+        raise RuntimeError("AMBIGUOUS_MAPPING_SUBSTITUTION")
+    backup = Path(tempfile.mkdtemp(prefix=".wa-alpha-key-backup-", dir=str(DROPIN.parent)))
     os.chmod(backup, 0o700)
-    saved = backup / source.name
-    shutil.copy2(source, saved)
+    saved = backup / "original-dropin.conf"
+    saved.write_bytes(original)
     os.chmod(saved, 0o600)
-    fd, name = tempfile.mkstemp(prefix=".wa-alpha-key-stage-", dir=str(source.parent))
+    sealed = DROPIN.parent / "zzzz-wa-alpha-supabase-read-key.enc"
+    if sealed.exists() or sealed.is_symlink():
+        raise RuntimeError("ENCRYPTED_TARGET_ALREADY_EXISTS")
+    fd, stage_name = tempfile.mkstemp(prefix=".wa-alpha-key-stage-", dir=str(DROPIN.parent))
     os.close(fd)
-    stage = Path(name)
+    stage = Path(stage_name)
     os.chmod(stage, 0o600)
-    replaced = False
+    fd, config_name = tempfile.mkstemp(prefix=".wa-alpha-dropin-stage-", dir=str(DROPIN.parent))
+    os.close(fd)
+    config_stage = Path(config_name)
+    os.chmod(config_stage, 0o600)
+    config_changed = False
     try:
         p = subprocess.run(["systemd-creds", "encrypt", "--name=" + NAME, "-", str(stage)],
                            input=new.encode(), capture_output=True, timeout=20)
         if p.returncode or decrypt(stage) != new.encode():
             raise RuntimeError("ENCRYPTION_SELF_TEST_FAILED")
+        new_mapping = "LoadCredentialEncrypted=" + NAME + ":" + str(sealed)
+        adjusted = original.decode("utf-8").replace(old_mapping, new_mapping, 1)
+        if adjusted.count(new_mapping) != 1 or "LoadCredential=" + NAME + ":" in adjusted:
+            raise RuntimeError("MAPPING_REPLACEMENT_GATE_FAILED")
+        config_stage.write_text(adjusted)
+        os.chmod(config_stage, 0o600)
         print("ENCRYPTED_STAGE=PASS_ROOT_ONLY_BACKUP", flush=True)
-        os.replace(stage, source)
-        os.chmod(source, 0o600)
-        replaced = True
+        # Once the new encrypted file is staged, unit configuration changes atomically.
+        os.replace(stage, sealed)
+        os.chmod(sealed, 0o600)
+        os.replace(config_stage, DROPIN)
+        os.chmod(DROPIN, stat.S_IMODE(os.stat(saved).st_mode) & 0o600)
+        config_changed = True
         try:
+            ctl("daemon-reload", timeout=15)
             ctl("restart", UNIT, timeout=45)
             freshpid, delivered = health(pid)
         except Exception as error:
             print("NEW_READER_HEALTH=FAIL_ROLLBACK_START", flush=True)
-            os.replace(saved, source)
-            replaced = False
-            os.chmod(source, 0o600)
+            os.replace(saved, DROPIN)
+            os.chmod(DROPIN, 0o600)
             try:
+                ctl("daemon-reload", timeout=15)
                 ctl("restart", UNIT, timeout=45)
                 oldpid, oldstate = state()
                 print("ROLLBACK_SERVICE_ACTIVE=" + str(oldstate == "active" and oldpid > 0), flush=True)
@@ -217,6 +248,7 @@ def main():
         print("WA_ALPHA_COMP_CUTOVER_RC=0", flush=True)
     finally:
         stage.unlink(missing_ok=True)
+        config_stage.unlink(missing_ok=True)
         print("SECRET_VALUES_PRINTED=NO", flush=True)
         print("WA_ALPHA_COMP_CUTOVER_END", flush=True)
 
