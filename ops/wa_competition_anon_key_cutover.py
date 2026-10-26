@@ -76,6 +76,27 @@ def supabase_rows(key):
         raise RuntimeError("SUPABASE_PROJECT_OR_READ_PERMISSION_MISMATCH")
     return {int(x["id"]): x for x in rows}
 
+def sdk_read_preflight(pid, publishable):
+    """Prove the exact installed Supabase JS client supports the new key."""
+    node = os.readlink("/proc/" + str(pid) + "/exe")
+    cwd = os.readlink("/proc/" + str(pid) + "/cwd")
+    code = (
+        "const {createClient}=require('@supabase/supabase-js');"
+        "const c=createClient(process.env.WA_CHECK_URL,process.env.WA_CHECK_KEY);"
+        "c.from('tournaments').select('id').in('id',[216,217,218])"
+        ".then(({data,error})=>{"
+        "if(error||!Array.isArray(data)||data.length!==3)process.exitCode=2;"
+        "}).catch(()=>{process.exitCode=3});"
+    )
+    proc = subprocess.run([node, "-e", code], cwd=cwd, timeout=18,
+                          capture_output=True, env={
+                              "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                              "WA_CHECK_URL": PROJECT,
+                              "WA_CHECK_KEY": publishable,
+                          })
+    if proc.returncode:
+        raise RuntimeError("LIVE_SUPABASE_JS_CLIENT_NOT_COMPATIBLE")
+
 def local_api(pid):
     env = env_for(pid)
     directory = Path(env.get(b"CREDENTIALS_DIRECTORY", b"").decode())
@@ -146,7 +167,8 @@ def main():
     if not re.fullmatch(r"sb_publishable_[A-Za-z0-9_-]{12,}", new):
         raise RuntimeError("NOT_A_PUBLISHABLE_KEY")
     rows = supabase_rows(new)  # 200 with correct IDs proves read access.
-    print("SUPABASE_NEW_KEY_READ=PASS_THREE_TOKENS", flush=True)
+    sdk_read_preflight(pid, new)  # Exact deployed JS package: no JWT/API incompatibility.
+    print("SUPABASE_NEW_KEY_READ=PASS_THREE_TOKENS_AND_JS_SDK", flush=True)
     backup = Path(tempfile.mkdtemp(prefix=".wa-alpha-key-backup-", dir=str(source.parent)))
     os.chmod(backup, 0o700)
     saved = backup / source.name
